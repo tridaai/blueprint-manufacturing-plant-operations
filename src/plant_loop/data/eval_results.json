@@ -1,6 +1,6 @@
 {
- "total": 32,
- "passed": 32,
+ "total": 36,
+ "passed": 36,
  "rate": 1.0,
  "gate": 0.95,
  "gate_passed": true,
@@ -195,6 +195,30 @@
   {
    "id": "A2",
    "kind": "allocation",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "E1",
+   "kind": "economics",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "E2",
+   "kind": "economics",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "E3",
+   "kind": "economics",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "E4",
+   "kind": "economics",
    "passed": true,
    "failures": []
   }

@@ -1,6 +1,6 @@
 """Golden loop eval: known cases in, loop behaviour checked.
 
-Thirty-two entries — twenty cases with authored expectations
+Thirty-six entries — twenty cases with authored expectations
 (per-case diagnosis class, exit reason, rounds used, draft kind,
 open gaps, verify-stage substitution records), three *defect* cases
 (a deliberately defective planner that drops safety steps, names an
@@ -19,8 +19,14 @@ the shelf's only belt — the higher-priority case converges and
 claims it, the lower blocks with the claim named; the supervisor
 rejects the winner at the gate, the claim is released, and a fresh
 run lets the lower case converge — while a lone case with no
-contention claims its substitute and behaves exactly as before).
-Every case runs the full pipeline through a fresh service on the
+contention claims its substitute and behaves exactly as before),
+and four *economics* entries (the board priced at the plant
+model's line rates: exposure maths over a two-case board, a
+minutes-only board on the unrated Utilities line, a dollar-heavy
+maintenance alert that must still work *after* a cheap line-down
+case — exposure never reorders the board — and cost accuracy
+against recorded actuals, per line and plant-wide). Every case
+runs the full pipeline through a fresh service on the
 deterministic offline backend, so the gate is hermetic:
 ``uv run python evals/run_evals.py`` exits non-zero below the gate.
 
@@ -386,6 +392,74 @@ def run_allocation_entry(entry: dict) -> list[str]:
     return failures
 
 
+def _dig(payload, path: str):
+    node = payload
+    for part in path.split("."):
+        node = node[int(part)] if isinstance(node, list) else node[part]
+    return node
+
+
+def _matches(got, want) -> bool:
+    if want is None:
+        return got is None
+    if isinstance(want, float):
+        return got is not None and abs(got - want) < 1e-6
+    return got == want
+
+
+def run_economics_entry(entry: dict) -> list[str]:
+    """Downtime economics, proven against the plant model's rates.
+
+    An entry runs its ``board_cases`` in one board run and/or its
+    ``cases`` singly, records any ``outcomes``, then checks the
+    expectations block: per-record economics fields (rate applied,
+    minutes-only nulls on the unrated line), the run's totals, and
+    dotted paths into the diagnosis stats' economics section.
+    Expected dollar figures are hand-computed from the KB rates —
+    line-a $2,400/hr, line-b $1,800/hr, line-c $950/hr, line-d
+    $720/hr, line-e unrated — so the gate checks the pricing, not
+    a snapshot of it.
+    """
+    service = fresh_service()
+    expected = entry["expected"]
+    failures: list[str] = []
+    run_result = None
+    if "board_cases" in entry:
+        run_result = service.run_board(
+            [ExceptionCase.model_validate(c) for c in entry["board_cases"]]
+        )
+    for raw in entry.get("cases", []):
+        service.run_case(ExceptionCase.model_validate(raw))
+    for case_id, payload in entry.get("outcomes", {}).items():
+        service.record_outcome(case_id, SupervisorOutcome.model_validate(payload))
+    if "order" in expected:
+        if run_result is None or run_result.processed != expected["order"]:
+            got = run_result.processed if run_result else None
+            failures.append(f"order: expected {expected['order']}, got {got}")
+    for case_id, fields in expected.get("records", {}).items():
+        record = service.store.get_case(case_id)
+        econ = record.economics.model_dump() if record and record.economics else {}
+        for field, want in fields.items():
+            got = econ.get(field)
+            if not _matches(got, want):
+                failures.append(
+                    f"record[{case_id}].{field}: expected {want}, got {got}"
+                )
+    if "run" in expected:
+        econ = run_result.economics.model_dump() if run_result and run_result.economics else {}
+        for field, want in expected["run"].items():
+            got = econ.get(field)
+            if not _matches(got, want):
+                failures.append(f"run.{field}: expected {want}, got {got}")
+    if "stats" in expected:
+        stats = diagnosis_stats(service.store.all_cases())
+        for path, want in expected["stats"].items():
+            got = _dig(stats, path)
+            if not _matches(got, want):
+                failures.append(f"stats.{path}: expected {want}, got {got}")
+    return failures
+
+
 def main() -> int:
     entries = load_cases()
     results = []
@@ -399,6 +473,8 @@ def main() -> int:
             failures = run_learning_entry(entry)
         elif entry["kind"] == "allocation":
             failures = run_allocation_entry(entry)
+        elif entry["kind"] == "economics":
+            failures = run_economics_entry(entry)
         else:
             failures = run_case_entry(entry)
         ok = not failures
