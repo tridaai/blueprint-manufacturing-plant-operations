@@ -71,6 +71,15 @@ Every case — converged or escalated, including safety stops — ends `awaiting
 
 The gate is a hard boundary, stated on every record (`GATE_NOTICE`): the agent never issues commands to machines, never marks work performed, never closes a case. A guardrail also screens the draft text itself for performed-work phrasing ("we replaced…", "back in production") — a draft that claims the work happened fails its own record's checks.
 
+## After the gate: outcomes, live accuracy, the watch
+
+The gate decision (approve/reject) is not the end of the record's life — it is the start of its evidence. Round 2 closes the loop:
+
+- **Outcomes** (`POST /api/cases/{id}/outcome`, `SupervisorOutcome` on the record): the supervisor records the plan's disposition (`accepted` / `accepted_with_changes` / `rejected` — a separate axis from the gate decision: whether the *drafted plan* was the plan that got executed), the confirmed fault, work performed, actual downtime, parts used, resolved. Validation happens at the transport (decision enum; confirmed fault must be in the KB vocabulary, `kb.fault_classes()`; non-negative downtime), because the outcome is ground truth for everything below. An outcome is recorded once; a second is a 409, not an edit. It rides inside the case record's JSONB payload — no new table, and the record on file remains exactly the record on file.
+- **Live diagnosis accuracy** (`stats.py`, `GET /api/stats/diagnosis`): a pure aggregation over records — the same code path serves both stores. A record enters fault scoring only when a fault was confirmed *and* the loop produced hypotheses (a safety stop confirms a fault with no diagnosis to score; it is counted separately as `confirmed_without_diagnosis`, never silently dropped). Metrics: top-1/top-2 accuracy, per-class precision/recall with counts, mean rounds over confirmed convergences, plan-acceptance counts/shares, downtime error (signed mean = bias, MAE = accuracy). With zero outcomes the payload is `available: false` with an explanatory note — honest empty states over flattering zeroes.
+- **Shift handoff** (`handoff.py`, `GET /api/board/handoff`, `?format=text` for plain text): composed entirely in code from the current records — awaiting cases in board order, escalations with open gaps, blocked-external cases with their unsatisfied parts, safety stops, open reliability items, and the latest board run with its budget-cut remainder. The JSON and the text are rendered from the same dict, so the shift-log paste cannot drift from the API. No model writes any part of it: a handoff is a safety-adjacent document, and an invented gap (or a dropped safety stop) is worse than a terse one.
+- **Recurring-fault watch** (`reliability.py`, `ReliabilityPolicy` in `loops.py`): invoked from the service wherever a case reaches the gate (`_persist_case`, used by both the single-case path and the board graph's result callback) and again on outcome recording. The fault a case counts as is its *effective* class — confirmed when an outcome carries one, else the top diagnosis — so a confirmation can complete a pattern or dissolve one. Counting is a rolling window over record timestamps anchored at the check moment; at the threshold (default 3 in 14 days) the watch persists one `reliability_review` `BoardItem` (its own table, migration `0003` — an item is not a case and has no loop record) with the contributing case ids as evidence, deduplicated on (machine, fault class) while an item is open. The item is the entire action: it appears on the board and in the handoff, and triggers nothing automatic.
+
 ## Guardrails as code
 
 | Guardrail | Where | Effect |
@@ -95,7 +104,7 @@ Cost estimation uses a small price table (`backends._PRICE_PER_MTOK`): Muse Spar
 
 ## Persistence & topology
 
-- **Store port** → `PostgresStore` (records, board runs, error log as JSONB rows) or `InMemoryStore` (test double). Board/metrics read models are computed from records in both.
+- **Store port** → `PostgresStore` (records, board runs, board items, error log as JSONB rows) or `InMemoryStore` (test double). Board/metrics/stats/handoff read models are computed from records in both.
 - **Checkpointer**: Postgres saver when `DATABASE_URL` is set, in-memory saver otherwise, `CHECKPOINTS=off` to disable (gate decisions then always take the direct-apply path).
 - **Vector index** for KB retrieval: pgvector table (`migrations/0002`), dimension-free column so embedder swaps don't migrate; in-memory cosine index as the double. Embedder: hashing (offline) or a provider `/embeddings` endpoint.
 - **Object store**: raw case payloads archived to S3 (compact stdlib SigV4 client — the blueprint's only outbound storage call) or memory.

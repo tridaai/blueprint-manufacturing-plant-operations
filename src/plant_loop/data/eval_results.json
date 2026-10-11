@@ -1,6 +1,6 @@
 {
- "total": 26,
- "passed": 26,
+ "total": 28,
+ "passed": 28,
  "rate": 1.0,
  "gate": 0.95,
  "gate_passed": true,
@@ -159,6 +159,18 @@
   {
    "id": "G26",
    "kind": "board",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "O1",
+   "kind": "outcome",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "O2",
+   "kind": "outcome",
    "passed": true,
    "failures": []
   }

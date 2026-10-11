@@ -5,9 +5,13 @@ diagnosis class, exit reason, rounds used, draft kind, open gaps —
 plus three *defect* cases (a deliberately defective planner that
 drops safety steps, names an unstocked part, and proposes a banned
 action) and three board cases (priority order, case budget, token
-budget). Every case runs the full pipeline through a fresh service
-on the deterministic offline backend, so the gate is hermetic:
-``uv run python evals/run_evals.py`` exits non-zero below the gate.
+budget). Two further *outcome* entries run cases end to end, record
+supervisor outcomes against them, and assert the live-accuracy
+stats and the recurring-fault watch behave as designed (the outcome
+loop measuring itself). Every case runs the full pipeline through a
+fresh service on the deterministic offline backend, so the gate is
+hermetic: ``uv run python evals/run_evals.py`` exits non-zero below
+the gate.
 
 These expectations encode the intended behaviour of the loops as
 designed — a regression gate, not an accuracy claim about any model.
@@ -29,8 +33,14 @@ from plant_loop.embeddings import HashingEmbedder, InMemoryVectorIndex  # noqa: 
 from plant_loop.kb import KBRetriever  # noqa: E402
 from plant_loop.loops import BoardPolicy  # noqa: E402
 from plant_loop.objectstore import InMemoryObjectStore  # noqa: E402
-from plant_loop.schemas import ExceptionCase, PartRequirement, PlanStep  # noqa: E402
+from plant_loop.schemas import (  # noqa: E402
+    ExceptionCase,
+    PartRequirement,
+    PlanStep,
+    SupervisorOutcome,
+)
 from plant_loop.service import PlantService  # noqa: E402
+from plant_loop.stats import diagnosis_stats  # noqa: E402
 from plant_loop.store import InMemoryStore  # noqa: E402
 
 GATE = 0.95
@@ -169,12 +179,42 @@ def run_board_entry(entry: dict) -> list[str]:
     return failures
 
 
+def run_outcome_entry(entry: dict) -> list[str]:
+    """Run cases, record authored outcomes, assert the stats math
+    and the watch — the outcome loop, gated like everything else."""
+    service = fresh_service()
+    for raw in entry["cases"]:
+        service.run_case(ExceptionCase.model_validate(raw))
+    for case_id, payload in entry.get("outcomes", {}).items():
+        service.record_outcome(case_id, SupervisorOutcome.model_validate(payload))
+    failures: list[str] = []
+    stats = diagnosis_stats(service.store.all_cases())
+    for key, want in entry.get("expected_stats", {}).items():
+        got = stats.get(key)
+        ok = abs(got - want) < 1e-3 if isinstance(want, float) else got == want
+        if not ok:
+            failures.append(f"stats.{key}: expected {want}, got {got}")
+    if "expected_reliability_items" in entry:
+        open_items = [i for i in service.store.all_board_items() if i.status == "open"]
+        if len(open_items) != entry["expected_reliability_items"]:
+            failures.append(
+                f"reliability items: expected {entry['expected_reliability_items']}, "
+                f"got {len(open_items)}"
+            )
+    return failures
+
+
 def main() -> int:
     entries = load_cases()
     results = []
     passed = 0
     for entry in entries:
-        failures = run_board_entry(entry) if entry["kind"] == "board" else run_case_entry(entry)
+        if entry["kind"] == "board":
+            failures = run_board_entry(entry)
+        elif entry["kind"] == "outcome":
+            failures = run_outcome_entry(entry)
+        else:
+            failures = run_case_entry(entry)
         ok = not failures
         passed += ok
         results.append({"id": entry["id"], "kind": entry["kind"], "passed": ok, "failures": failures})

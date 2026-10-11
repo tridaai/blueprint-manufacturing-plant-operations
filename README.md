@@ -78,13 +78,23 @@ Every round call is validated against a strict schema with one bounded retry; a 
 
 ## Evals
 
-`make evals` runs the golden loop pack — 26 authored cases against the offline backend, hermetic and deterministic:
+`make evals` runs the golden loop pack — 28 authored entries against the offline backend, hermetic and deterministic:
 
 - **20 case cases**: expected diagnosis class, exit reason, rounds used, draft kind — including the two-round convergence (a bearing fault the first round can't yet separate from a tool imbalance, separated by a discriminating check in round 2), the round-0 safety stop, the skip-lockout injection, both blocked-on-parts shapes, and an honest `exhausted` for a fault with no SOP.
 - **3 defect cases**: deliberately defective planners — one drops safety steps, one names an unstocked part, one proposes bypassing an interlock — and the verify round must catch each (never converge, blocked, safety stop respectively). This is gap-recall, tested against the failure modes the loop exists for.
 - **3 board cases**: the seeded board drains in the exact priority order; a case budget of 3 and a token budget both cut the run at the right place and hand over the right remainder.
+- **2 outcome cases**: cases run end to end, supervisor outcomes are recorded against them, and the harness asserts the live-accuracy stats and the recurring-fault watch — including a partial outcome (disposition only) and a confirmation that reclassifies a case out of its diagnosed pattern.
 
-Gate: ≥95% overall. Current: **26/26**. Plus 63 pytest tests — loop-controller units with scripted critiques (converge r1/r2, exhaust, budget, safety), the Muse adapters against stubbed transports (request shaping + reasoning continuity), guardrails, priority, the service and API — and 2 Postgres-gated tests that skip without a database.
+Gate: ≥95% overall. Current: **28/28**. Plus 81 pytest tests — loop-controller units with scripted critiques (converge r1/r2, exhaust, budget, safety), the Muse adapters against stubbed transports (request shaping + reasoning continuity), guardrails, priority, the service and API, and hand-computed fixtures for the outcome stats, the handoff and the watch — with 2 Postgres-gated tests that skip without a database.
+
+## Closing the loop: outcomes
+
+A gate decision says a draft may proceed. It does not say the draft was *right*. So the record stays open for what happened next, and the loop is measured against it:
+
+- **Outcome capture** — `POST /api/cases/{id}/outcome` (and the form on the case detail in the console): the supervisor records the plan's disposition (`accepted` / `accepted_with_changes` / `rejected`), the **confirmed fault** from the same vocabulary the diagnoses speak, the work performed, the actual downtime, the parts used, and whether the case resolved. Validation is strict — an unknown fault class is a 422, because ground truth with a typo in it poisons every number downstream. Partial outcomes count for what they recorded.
+- **Live diagnosis accuracy** — `GET /api/stats/diagnosis`: top-1/top-2 accuracy of the diagnosis against confirmed faults, per-fault-class precision/recall with their counts, mean rounds-to-converge for confirmed cases, plan-acceptance rates, and estimated-vs-actual downtime error. Pure aggregation over the records, identical over both stores; with no outcomes yet it says so instead of printing zeroes.
+- **Shift handoff** — `GET /api/board/handoff` (add `?format=text` for the shift-log text): cases at the gate, escalations with their open gaps, blocked-external cases with the part they're waiting on, safety stops, open reliability items, and the last board run — including what a budget cut left unworked. Every fact is composed in code from the records; no model writes any of it.
+- **Recurring-fault watch** — when a case reaches the gate, or an outcome confirms a fault, a code-side watch counts the same machine + fault class inside a rolling window (default: 3 in 14 days, `RELIABILITY_THRESHOLD` / `RELIABILITY_WINDOW_DAYS`). At the threshold it raises **one** `reliability_review` item on the board, carrying the contributing cases as evidence. Fixing the same bearing three times in a fortnight is a reliability problem, not three maintenance jobs — the item says so, and then does nothing else: it triggers no automatic action and waits at the supervisor gate like everything else.
 
 ## Honest status
 
@@ -106,12 +116,15 @@ src/plant_loop/
   screening.py    injection screen + banned-action screen for floor text and plan steps
   kb.py           the synthetic plant KB (SOPs, history, inventory) + retriever
   drafts.py       work-order / escalation draft builders (deterministic, gate-noticed)
+  stats.py        live diagnosis accuracy over recorded outcomes (pure aggregation)
+  handoff.py      the shift handoff report, composed in code (JSON + text)
+  reliability.py  the recurring-fault watch: reliability_review board items
   store.py        record stores: PostgreSQL / in-memory double
   service.py      runs the graphs, owns persistence and the gate
   api.py          FastAPI transport + the single-file console
   data/           kb.json, sample_cases.json (the seeded board), eval_results.json
-migrations/       numbered SQL (records, board runs, errors, pgvector KB index)
-evals/            golden.jsonl (26 cases) + run_evals.py (the gate)
+migrations/       numbered SQL (records, board runs, errors, pgvector KB index, board items)
+evals/            golden.jsonl (28 entries) + run_evals.py (the gate)
 tests/            pytest suite
 ```
 
