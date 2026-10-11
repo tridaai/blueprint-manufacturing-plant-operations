@@ -1,6 +1,6 @@
 {
- "total": 36,
- "passed": 36,
+ "total": 38,
+ "passed": 38,
  "rate": 1.0,
  "gate": 0.95,
  "gate_passed": true,
@@ -219,6 +219,18 @@
   {
    "id": "E4",
    "kind": "economics",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G-C1",
+   "kind": "carryover",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G-C2",
+   "kind": "carryover",
    "passed": true,
    "failures": []
   }

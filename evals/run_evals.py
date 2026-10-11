@@ -1,6 +1,6 @@
 """Golden loop eval: known cases in, loop behaviour checked.
 
-Thirty-six entries — twenty cases with authored expectations
+Thirty-eight entries — twenty cases with authored expectations
 (per-case diagnosis class, exit reason, rounds used, draft kind,
 open gaps, verify-stage substitution records), three *defect* cases
 (a deliberately defective planner that drops safety steps, names an
@@ -25,7 +25,14 @@ model's line rates: exposure maths over a two-case board, a
 minutes-only board on the unrated Utilities line, a dollar-heavy
 maintenance alert that must still work *after* a cheap line-down
 case — exposure never reorders the board — and cost accuracy
-against recorded actuals, per line and plant-wide). Every case
+against recorded actuals, per line and plant-wide), and two
+*carryover* entries (the next shift inheriting the board: a
+budget-cut run whose blocked case resumes with its rounds intact
+and takes the belt a decided-and-done case's released claim
+freed, a waiting case's claim renewed with its provenance
+stamped — and a carried case dropped at acceptance, audited,
+its claim released, the case it blocked converging on the freed
+part). Every case
 runs the full pipeline through a fresh service on the
 deterministic offline backend, so the gate is hermetic:
 ``uv run python evals/run_evals.py`` exits non-zero below the gate.
@@ -460,6 +467,119 @@ def run_economics_entry(entry: dict) -> list[str]:
     return failures
 
 
+def run_carryover_entry(entry: dict) -> list[str]:
+    """Shift carry-over, proven across two board runs.
+
+    Run 1 works ``board_cases`` (optionally under a case budget);
+    the entry's gate ``decisions`` and ``outcomes`` then land, and
+    run 2 accepts run 1's board by ``carry_over_from`` (with any
+    ``drop`` entries). The checks read run 1's computed manifest,
+    run 2's settlement — blocked cases re-worked with their round
+    counts intact, gate cases inherited standing, drops audited —
+    the whole claim ledger after the turnover (renewed claims
+    stamped with their provenance, finished cases' claims
+    released with ``released_run_ended``), and the plant-wide
+    case count: a case worked on two boards is one case in the
+    stats, never two.
+    """
+    service = fresh_service()
+    expected = entry["expected"]
+    failures: list[str] = []
+    policy_spec = entry.get("board_policy") or {}
+    policy = (
+        BoardPolicy(max_cases=policy_spec["max_cases"])
+        if "max_cases" in policy_spec
+        else None
+    )
+    run1 = service.run_board(
+        [ExceptionCase.model_validate(c) for c in entry["board_cases"]],
+        board_policy=policy,
+    )
+    for case_id, decision in (entry.get("decisions") or {}).items():
+        service.record_decision(case_id, decision, by="Eval Supervisor")
+    for case_id, payload in (entry.get("outcomes") or {}).items():
+        service.record_outcome(case_id, SupervisorOutcome.model_validate(payload))
+    second = entry["second_run"]
+    run2 = service.run_board(
+        [ExceptionCase.model_validate(c) for c in second.get("cases", [])],
+        carry_over_from=run1.run_id if second.get("carry_over_from") else "",
+        drop=second.get("drop") or None,
+    )
+    if "run1_order" in expected and run1.processed != expected["run1_order"]:
+        failures.append(
+            f"run1_order: expected {expected['run1_order']}, got {run1.processed}"
+        )
+    if "run1_exits" in expected and run1.exits != expected["run1_exits"]:
+        failures.append(
+            f"run1_exits: expected {expected['run1_exits']}, got {run1.exits}"
+        )
+    if "run1_remaining" in expected:
+        got = [item["case_id"] for item in run1.remaining]
+        if got != expected["run1_remaining"]:
+            failures.append(
+                f"run1_remaining: expected {expected['run1_remaining']}, got {got}"
+            )
+    if "manifest" in expected:
+        got = {e["case_id"]: e["kind"] for e in run1.carry_over}
+        if got != expected["manifest"]:
+            failures.append(f"manifest: expected {expected['manifest']}, got {got}")
+    if "settled" in expected:
+        for key, want in expected["settled"].items():
+            got = sorted(run2.carry_over_settled.get(key, []))
+            if got != sorted(want):
+                failures.append(f"settled.{key}: expected {want}, got {got}")
+    if "run2_exits" in expected and run2.exits != expected["run2_exits"]:
+        failures.append(
+            f"run2_exits: expected {expected['run2_exits']}, got {run2.exits}"
+        )
+    for case_id, want in expected.get("record_rounds", {}).items():
+        record = service.store.get_case(case_id)
+        got = len(record.rounds) if record else None
+        if got != want:
+            failures.append(f"record[{case_id}].rounds: expected {want}, got {got}")
+    for case_id, want in expected.get("record_status", {}).items():
+        record = service.store.get_case(case_id)
+        got = record.status if record else None
+        if got != want:
+            failures.append(f"record[{case_id}].status: expected {want}, got {got}")
+    if "claims" in expected:
+        got = sorted(
+            [c.part_id, c.case_id, c.status]
+            for c in service.allocation.all_claims()
+        )
+        if got != sorted(expected["claims"]):
+            failures.append(f"claims: expected {expected['claims']}, got {got}")
+    if "claim_reasons" in expected:
+        got = {
+            c.claim_id: c.release_reason
+            for c in service.allocation.all_claims()
+            if c.release_reason
+        }
+        if got != expected["claim_reasons"]:
+            failures.append(
+                f"claim_reasons: expected {expected['claim_reasons']}, got {got}"
+            )
+    if "claim_carried_from" in expected:
+        got = {
+            c.case_id: (
+                "run1" if c.carried_from_run == run1.run_id else c.carried_from_run
+            )
+            for c in service.allocation.all_claims()
+            if c.carried_from_run
+        }
+        if got != expected["claim_carried_from"]:
+            failures.append(
+                f"claim_carried_from: expected {expected['claim_carried_from']}, got {got}"
+            )
+    if "stats_cases_total" in expected:
+        got = diagnosis_stats(service.store.all_cases())["cases_total"]
+        if got != expected["stats_cases_total"]:
+            failures.append(
+                f"stats.cases_total: expected {expected['stats_cases_total']}, got {got}"
+            )
+    return failures
+
+
 def main() -> int:
     entries = load_cases()
     results = []
@@ -475,6 +595,8 @@ def main() -> int:
             failures = run_allocation_entry(entry)
         elif entry["kind"] == "economics":
             failures = run_economics_entry(entry)
+        elif entry["kind"] == "carryover":
+            failures = run_carryover_entry(entry)
         else:
             failures = run_case_entry(entry)
         ok = not failures
