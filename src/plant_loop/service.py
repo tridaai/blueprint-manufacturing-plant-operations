@@ -13,8 +13,14 @@ never to the graphs directly. The service:
 - runs the board (board graph over the case graph), persisting each
   case record as it reaches the gate, and the board run at the end —
   settling a predecessor run's carry-over first when the run names
-  one (carryover.py), and stamping the finished run with its own
-  outgoing carry-over manifest;
+  one (carryover.py), stamping the finished run with its own
+  outgoing carry-over manifest, and carrying the cycle cases of any
+  standing PM obligation whose due point the run reaches (pm.py);
+- drafts preventive-maintenance proposals where the recurring-fault
+  watch's pattern earns them (pm.py — evaluated wherever the watch
+  is checked), records the supervisor's decision on them, and lets
+  a PM cycle case's outcome — and nothing else — close or roll its
+  obligation's cycle;
 - answers board/metrics/record reads from the store.
 
 A failed reasoning call is never recorded as a guess: the error is
@@ -41,6 +47,7 @@ from .events import CollectingSink, RunEvent, format_timestamp
 from .graph import CaseRunOutcome, build_board_graph, build_case_graph
 from .loops import BoardPolicy, CaseLoopController, LoopPolicy, ReliabilityPolicy
 from .objectstore import payload_bytes
+from .pm import PmManager
 from .ports import Checkpointer, EventSink, ObjectStore, Reasoner, Retriever, Store
 from .reliability import ReliabilityWatch
 from .schemas import (
@@ -48,6 +55,8 @@ from .schemas import (
     BoardRunResult,
     CaseResult,
     ExceptionCase,
+    PmObligation,
+    PmProposal,
     SupervisorOutcome,
 )
 
@@ -87,6 +96,12 @@ class PlantService:
     def reliability_watch(self) -> ReliabilityWatch:
         return ReliabilityWatch(self.store, self.reliability_policy)
 
+    @property
+    def pm_manager(self) -> PmManager:
+        return PmManager(
+            self.store, ReliabilityWatch(self.store, self.reliability_policy)
+        )
+
     def _persist_case(self, record: CaseResult) -> None:
         """Save a case that reached the gate, claim its parts,
         then run the recurring-fault watch over it (reliability.py).
@@ -107,6 +122,11 @@ class PlantService:
         self.store.save_case(record)
         self.allocation.claim_from_record(record, self._active_run_id or "single")
         self.reliability_watch.check(record)
+        # The watch's item is the notice; the PM layer (pm.py) is
+        # the follow-through: the same pattern, freshly counted by
+        # the watch's own rule, drafts a preventive-maintenance
+        # proposal for a supervisor to decide on.
+        self.pm_manager.evaluate(record)
 
     # -- collaborators ---------------------------------------------------
 
@@ -238,6 +258,22 @@ class PlantService:
             raise KeyError(f"unknown case: {case_id}")
         if record.outcome is not None:
             raise ValueError(f"case {case_id} already has a recorded outcome")
+        if (
+            outcome.decision == "rejected"
+            and not outcome.work_performed.strip()
+            and self.pm_manager.obligation_for_case(case_id) is not None
+        ):
+            # A PM cycle case rejected without a note would defer
+            # the obligation silently. The deferral's reason IS the
+            # work-performed note — refuse before anything saves,
+            # so a refused outcome leaves no trace (the same
+            # discipline as the safety write-back refusal below).
+            raise ValueError(
+                f"case {case_id} is a preventive-maintenance cycle case: "
+                "a rejected outcome defers the obligation, and a deferral "
+                "needs the supervisor's reason — record it as the "
+                "work-performed note"
+            )
         outcome.recorded_at = format_timestamp(datetime.now(timezone.utc))
         entry = history_module.entry_for_record(record, outcome)  # may refuse (safety stop)
         record.outcome = outcome
@@ -249,6 +285,15 @@ class PlantService:
         if entry is not None:
             self.store.save_history_entry(entry)
         self.reliability_watch.check(record)
+        # A PM cycle case's outcome closes or rolls its
+        # obligation's cycle (pm.py) — performed stamps come from
+        # this outcome alone. Any other case's outcome is then
+        # evaluated like any gate arrival: a confirmed fault can be
+        # the case that earns a proposal. (A cycle case's own
+        # outcome never earns one — an inspection is not a
+        # recurrence, and pm.evaluate knows its case ids.)
+        self.pm_manager.close_cycle(record, outcome)
+        self.pm_manager.evaluate(record)
         return record
 
     def _try_resume(self, case_id: str, payload: dict) -> CaseResult | None:
@@ -318,6 +363,28 @@ class PlantService:
                 new_case_ids={c.case_id for c in cases},
             )
             queue = carried_queue + queue
+        if settled is not None:
+            # A PM cycle case dropped at this acceptance has been
+            # deferred in every way that matters: its obligation
+            # rolls like one (pm.py), on the drop's own by/reason.
+            for dropped_id in settled.get("dropped", []):
+                drop_info = next(
+                    (d for d in (drop or []) if d.get("case_id") == dropped_id),
+                    {},
+                )
+                self.pm_manager.note_board_drop(
+                    dropped_id,
+                    by=drop_info.get("by", ""),
+                    reason=drop_info.get("reason", ""),
+                )
+        # Standing PM obligations whose due point this run reaches
+        # send their cycle cases (pm.py): the board remembers the
+        # date the way it remembers a carried board — in code, as
+        # cases on the queue, ranked by the same priority formula.
+        pm_cases = self.pm_manager.due_cases()
+        for case in pm_cases:
+            self._archive(case)
+        queue = queue + [{"case": c.model_dump(), "resume": None} for c in pm_cases]
         case_graph = self._case_graph(sink)
         board_graph = build_board_graph(
             case_graph,
@@ -336,6 +403,7 @@ class PlantService:
         finally:
             self._active_run_id = ""
         result = BoardRunResult.model_validate(output["board_result"])
+        result.pm_cases = [c.case_id for c in pm_cases]
         result.allocations = self.allocation.claims_for_run(run_id)
         worked = [self.store.get_case(cid) for cid in result.processed]
         # The run priced as one board: the estimated downtime
@@ -439,6 +507,31 @@ class PlantService:
 
     def board_items(self) -> list[BoardItem]:
         return self.store.all_board_items()
+
+    def pm_proposals(self) -> list[PmProposal]:
+        return self.pm_manager.proposals()
+
+    def pm_obligations(self) -> list[PmObligation]:
+        return self.pm_manager.obligations()
+
+    def decide_pm_proposal(
+        self,
+        proposal_id: str,
+        decision: str,
+        by: str = "",
+        reason: str = "",
+        interval_days: int | None = None,
+        last_performed_at: str = "",
+    ) -> tuple[PmProposal, PmObligation | None]:
+        """Record the supervisor's decision on a PM proposal (pm.py)."""
+        return self.pm_manager.decide(
+            proposal_id,
+            decision,
+            by=by,
+            reason=reason,
+            interval_days=interval_days,
+            last_performed_at=last_performed_at,
+        )
 
     # -- internals ---------------------------------------------------------------
 
