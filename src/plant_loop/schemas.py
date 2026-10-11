@@ -296,14 +296,21 @@ class PartClaim(BaseModel):
 
     A claim is a planning reservation on the record, nothing more:
     it is not a warehouse transaction, it draws no stock, and it
-    says nothing about work performed. It ends in exactly one of
-    two ways: the supervisor approves the case at the gate (the
-    claim stands — the approved work order will draw the part), or
-    the supervisor rejects it, and the claim is released back to
-    the pool for *future* runs, stamped with who released it and
-    why. A release never rewrites the finished run it came from —
-    runs are records; a case that lost a part to a claim keeps its
-    blocked record until a fresh run re-plans it.
+    says nothing about work performed. While its case waits at the
+    gate it stands — across board runs, too: a successor run that
+    accepts the case as carry-over renews the claim into itself
+    (``carried_from_run`` keeps the hop's provenance), and it
+    stays releasable exactly as before. It is released in one of
+    two ways, each stamped with who released it and why: the
+    supervisor rejects the case at the gate
+    (``released_by_gate_rejection``), or a board turnover finds
+    the case's business finished — decided and done, dropped,
+    superseded (``released_run_ended``, carryover.py). The one
+    claim a turnover never releases is an approved case's while
+    its outcome is still outstanding: the approved work order
+    will draw the part. A release never rewrites the finished run
+    it came from — runs are records; a case that lost a part to a
+    claim keeps its blocked record until a fresh run re-plans it.
     """
 
     claim_id: str  # claim-<case_id>-<part_id drawn>
@@ -316,7 +323,14 @@ class PartClaim(BaseModel):
     claimed_at: str = ""
     released_at: str = ""
     released_by: str = ""
-    release_reason: str = ""  # released_by_gate_rejection
+    release_reason: str = ""  # released_by_gate_rejection | released_run_ended
+    # Set when a successor board run accepts this claim's case as
+    # carry-over (carryover.py): the run the claim was carried
+    # *from* at its latest renewal. ``run_id`` then names the run
+    # that currently holds the claim; this field keeps the hop's
+    # provenance, so a gap can say "carried over from board run X"
+    # instead of pretending the claim was made on today's board.
+    carried_from_run: str = ""
 
 
 class CaseEconomics(BaseModel):
@@ -372,7 +386,10 @@ class CaseResult(BaseModel):
     """The record that waits at the supervisor's gate."""
 
     case_id: str
-    status: str = "awaiting_supervisor"  # awaiting_supervisor | approved | rejected
+    # awaiting_supervisor | approved | rejected | dropped (a
+    # carried case the supervisor dropped when the next shift
+    # accepted the board — carryover.py; the stamp is below).
+    status: str = "awaiting_supervisor"
     exit_reason: str = ""
     type: str = ""
     title: str = ""
@@ -395,6 +412,12 @@ class CaseResult(BaseModel):
     decision: str = ""
     decision_by: str = ""
     decision_reason: str = ""
+    # When a successor board run accepted this case's predecessor
+    # run as carry-over and the supervisor dropped the case at that
+    # acceptance: {from_run, into_run, by, reason, at}. The case
+    # leaves the board (status "dropped"); the stamp is the audit
+    # trail. Empty for every case that was never dropped.
+    dropped_from_board: dict = Field(default_factory=dict)
     # What actually happened after the gate, when recorded.
     outcome: SupervisorOutcome | None = None
     # The case priced in downtime dollars (economics.py). Stamped
@@ -418,6 +441,15 @@ class BoardRunResult(BaseModel):
     # The run priced in downtime dollars: the estimated exposure
     # its processed cases carry (economics.py).
     economics: BoardEconomics | None = None
+    # Carry-over (carryover.py): the run this one inherited its
+    # board from ("" — it started clean), how the inheritance
+    # settled (cases inherited / re-worked / dropped / closed, and
+    # the claims renewed and released at the turnover), and this
+    # run's own outgoing manifest — the unfinished business the
+    # next shift is offered, computed in code when the run ends.
+    carried_from: str = ""
+    carry_over_settled: dict = Field(default_factory=dict)
+    carry_over: list[dict] = Field(default_factory=list)
     handoff_summary: str = ""
     telemetry: CaseTelemetry = Field(default_factory=CaseTelemetry)
     created_at: str = ""

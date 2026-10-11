@@ -37,6 +37,11 @@ the plain-code path share one implementation of every round.
 ``select`` applies the board budget in code; ``process`` runs the
 case graph in record mode and reports each finished record through
 the ``on_case_result`` callback so the service persists it at once.
+Queue entries are ``{"case", "resume"}`` wrappers: a case a
+successor board inherited as carry-over (carryover.py) rides with
+the resume seed its previous loop state produced, and the case
+graph's ``prepare`` node overlays it, so the case continues at its
+loop-back point instead of starting cold.
 """
 
 from __future__ import annotations
@@ -84,6 +89,13 @@ _NODE_TITLES = {
 class CaseState(TypedDict, total=False):
     case: dict
     gate_mode: str  # "pause" (interrupt at the gate) | "record"
+    # Carry-over resume seed (carryover.py): a blocked case a
+    # successor board run re-works enters with its prior loop
+    # state — diagnosis, plan, open gaps, round records, token
+    # spend — overlaid at prepare, so the loop continues at its
+    # loop-back point instead of starting cold. Absent on every
+    # fresh intake.
+    resume: dict
     case_text: str
     injection_flags: list[str]
     kb_chunks: list[dict]
@@ -231,6 +243,26 @@ def build_case_graph(
     def prepare(state: CaseState) -> dict:
         case = ExceptionCase.model_validate(state["case"])
         run = controller.prepare(case, state.get("case_text", ""))
+        resume = state.get("resume") or {}
+        if resume:
+            # Carry-over (carryover.py): the case re-enters at the
+            # loop's loop-back point. Its prior diagnosis, plan and
+            # open gaps become the loop state, its round records
+            # and token spend carry over — so the next round is
+            # round N+1 against the same max_rounds bound, and the
+            # first resumed round re-diagnoses focused on the
+            # carried gaps, exactly as a loop-back round does. The
+            # context above was still prepared fresh: the machine's
+            # history may have grown since the case last ran.
+            from .schemas import ActionPlan, Diagnosis, Gap, RoundRecord
+
+            run.diagnosis = Diagnosis.model_validate(resume["diagnosis"])
+            run.plan = ActionPlan.model_validate(resume["plan"])
+            run.gaps = [Gap.model_validate(g) for g in resume.get("gaps", [])]
+            run.rounds = [RoundRecord.model_validate(r) for r in resume.get("rounds", [])]
+            run.round_no = len(run.rounds)
+            run.input_tokens = int(resume.get("input_tokens", 0))
+            run.output_tokens = int(resume.get("output_tokens", 0))
         update = _run_to_state(run)
         if case.type == "safety_observation":
             update["exit_reason"] = EXIT_SAFETY_STOP
@@ -239,11 +271,18 @@ def build_case_graph(
             ]
         else:
             confirmed = sum(1 for e in run.ctx.history if e.get("source") == "supervisor_confirmed")
-            update["_details"] = [
+            details = [
                 f"{len(run.ctx.kb_context)} KB chunk(s) in context for the diagnose round; "
                 f"machine history: {len(run.ctx.history)} entr(ies)"
                 + (f", {confirmed} supervisor-confirmed" if confirmed else "")
             ]
+            if resume:
+                details.append(
+                    f"carry-over resume: {len(run.rounds)} round(s) and "
+                    f"{len(run.gaps)} open gap(s) carried from the previous "
+                    "board — the loop continues, it does not restart"
+                )
+            update["_details"] = details
         return update
 
     def diagnose(state: CaseState) -> dict:
@@ -423,10 +462,23 @@ def build_board_graph(
     sink = sink or NullSink()
 
     def order(state: BoardState) -> dict:
-        cases = [ExceptionCase.model_validate(c) for c in state.get("queue", [])]
+        # Queue entries are {"case": ..., "resume": ...} wrappers —
+        # a carried case's resume seed (carryover.py) rides beside
+        # its intake payload; a bare case payload is a fresh intake
+        # and wraps itself. Priority orders cases, wrappers and
+        # all: a carried case takes its place on the new board by
+        # the same formula as a fresh one.
+        wrapped = []
+        for item in state.get("queue", []):
+            if "case" in item:
+                wrapped.append({"case": item["case"], "resume": item.get("resume")})
+            else:
+                wrapped.append({"case": item, "resume": None})
+        cases = [ExceptionCase.model_validate(w["case"]) for w in wrapped]
+        by_id = {c.case_id: w for c, w in zip(cases, wrapped)}
         ordered = board_order(cases)
         return {
-            "queue": [c.model_dump() for c in ordered],
+            "queue": [by_id[c.case_id] for c in ordered],
             "processed": [],
             "exits": {},
             "remaining": [],
@@ -446,12 +498,12 @@ def build_board_graph(
             stop = f"shift token budget reached ({board_policy.board_token_budget} tokens)"
         if stop:
             remaining = [
-                {"case_id": c["case_id"], "reason": stop if stop != "board clear" else "not reached"}
+                {"case_id": c["case"]["case_id"], "reason": stop if stop != "board clear" else "not reached"}
                 for c in queue
             ] if stop != "board clear" else []
             return {"current": {}, "remaining": remaining, "stop_reason": stop, "queue": []}
         current = queue.pop(0)
-        case = ExceptionCase.model_validate(current)
+        case = ExceptionCase.model_validate(current["case"])
         score, reason = priority_for(case)
         sink.emit(RunEvent(type="case_selected", case_id=case.case_id,
                            detail={"priority": score, "reason": reason}))
@@ -461,17 +513,18 @@ def build_board_graph(
         return "process" if state.get("current") else "handoff"
 
     def process(state: BoardState) -> dict:
-        case = ExceptionCase.model_validate(state["current"])
+        current = state["current"]
+        case = ExceptionCase.model_validate(current["case"])
         config = {"configurable": {"thread_id": f"{state.get('run_id', 'board')}:{case.case_id}"}}
-        output = case_graph.invoke(
-            {
-                "case": case.model_dump(),
-                "gate_mode": "record",
-                "trace": [],
-                "started_at": time.time(),
-            },
-            config=config,
-        )
+        invoke_state = {
+            "case": case.model_dump(),
+            "gate_mode": "record",
+            "trace": [],
+            "started_at": time.time(),
+        }
+        if current.get("resume"):
+            invoke_state["resume"] = current["resume"]
+        output = case_graph.invoke(invoke_state, config=config)
         result = CaseResult.model_validate(output["result"])
         if on_case_result is not None:
             on_case_result(result)

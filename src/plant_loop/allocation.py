@@ -26,9 +26,15 @@ the board's own decision.
 supervisor approves it (the approved work order will draw the
 part). A gate rejection releases it — stamped with the reason
 (:data:`RELEASE_REASON`), when, and by whom — back into the pool
-for *future* runs. A release never reaches back into the finished
-run it came from: runs are records, and a case that blocked on a
-claim keeps that record until a fresh run re-plans it.
+for *future* runs. Since round 7 a board turnover is the second
+release path (:data:`RELEASE_RUN_ENDED`, adjudicated in
+carryover.py): a claim whose case carried over is renewed into
+the accepting run instead, and a released claim never blocks a
+legitimate re-claim — if the case later earns the part again,
+its ledger row is revived as a fresh claim. A release never
+reaches back into the finished run it came from: runs are
+records, and a case that blocked on a claim keeps that record
+until a fresh run re-plans it.
 
 A claim is a planning reservation on the record. It is not a
 warehouse transaction, it draws no stock, and it never marks work
@@ -54,6 +60,16 @@ from .ports import Store
 from .schemas import EXIT_CONVERGED, CaseResult, PartClaim
 
 RELEASE_REASON = "released_by_gate_rejection"
+
+# The turnover release (carryover.py): when a successor board run
+# accepts a predecessor's board, the claims of cases that do not
+# carry over — decided and done, dropped at the acceptance, or
+# superseded by a fresh submission — are released with this
+# reason, so a part a finished board was holding cannot stay
+# silently claimed forever. A claim whose case is approved and
+# still awaiting its outcome is exempt: the approved work order
+# will draw the part, exactly as before.
+RELEASE_RUN_ENDED = "released_run_ended"
 
 
 class AllocationLedger:
@@ -109,6 +125,11 @@ class AllocationLedger:
         for claim in self.outstanding(part_id):
             remaining -= claim.qty
             if remaining < needed:
+                if claim.carried_from_run:
+                    return (
+                        f"claimed by {claim.case_id} "
+                        f"(carried over from board run {claim.carried_from_run})"
+                    )
                 if current_run_id and claim.run_id == current_run_id:
                     return f"claimed by {claim.case_id}, higher priority on this board"
                 if claim.run_id == "single":
@@ -129,7 +150,7 @@ class AllocationLedger:
         """
         if record.exit_reason != EXIT_CONVERGED:
             return []
-        existing = {c.claim_id for c in self.store.all_part_claims()}
+        existing = {c.claim_id: c for c in self.store.all_part_claims()}
         made: list[PartClaim] = []
         stamp = format_timestamp(datetime.now(timezone.utc))
         for req in record.plan.required_parts:
@@ -137,7 +158,26 @@ class AllocationLedger:
                 continue
             drawn = req.substitute_part_id or req.part_id
             claim_id = f"claim-{record.case_id}-{drawn}"
-            if claim_id in existing:
+            prior = existing.get(claim_id)
+            if prior is not None and prior.status == "claimed":
+                continue  # already standing — persisting twice claims once
+            if prior is not None:
+                # The claim id exists but was released (a gate
+                # rejection, or a board turnover): the case has
+                # legitimately earned the part again, so the row
+                # is revived as a fresh claim of this run rather
+                # than left dead — one row per case + part, its
+                # stamps telling the current claim's story.
+                prior.run_id = run_id
+                prior.qty = req.qty
+                prior.status = "claimed"
+                prior.claimed_at = stamp
+                prior.released_at = ""
+                prior.released_by = ""
+                prior.release_reason = ""
+                prior.carried_from_run = ""
+                self.store.save_part_claim(prior)
+                made.append(prior)
                 continue
             claim = PartClaim(
                 claim_id=claim_id,
@@ -150,9 +190,18 @@ class AllocationLedger:
                 claimed_at=stamp,
             )
             self.store.save_part_claim(claim)
-            existing.add(claim_id)
+            existing[claim_id] = claim
             made.append(claim)
         return made
+
+    def release_claim(self, claim: PartClaim, by: str, reason: str) -> PartClaim:
+        """Release one standing claim, stamped with when, who, why."""
+        claim.status = "released"
+        claim.released_at = format_timestamp(datetime.now(timezone.utc))
+        claim.released_by = by
+        claim.release_reason = reason
+        self.store.save_part_claim(claim)
+        return claim
 
     def release_for_case(self, case_id: str, by: str = "") -> list[PartClaim]:
         """Release a rejected case's standing claims, stamped.
@@ -162,15 +211,30 @@ class AllocationLedger:
         pool for future runs; the finished run that produced the
         blocked neighbour is a record and does not change.
         """
-        stamp = format_timestamp(datetime.now(timezone.utc))
-        released: list[PartClaim] = []
+        return [
+            self.release_claim(claim, by=by, reason=RELEASE_REASON)
+            for claim in self.claims_for_case(case_id)
+            if claim.status == "claimed"
+        ]
+
+    def renew_for_case(self, case_id: str, into_run_id: str) -> list[PartClaim]:
+        """Renew a carried case's standing claims into a new run.
+
+        Called when a successor board run accepts the case as
+        carry-over (carryover.py): the claim keeps standing — the
+        case still waits at the gate on the strength of the same
+        plan — but its home run becomes the accepting run, with
+        ``carried_from_run`` recording the hop's provenance. The
+        renewed claim is releasable exactly as before (a gate
+        rejection of the case releases it under
+        :data:`RELEASE_REASON`).
+        """
+        renewed: list[PartClaim] = []
         for claim in self.claims_for_case(case_id):
             if claim.status != "claimed":
                 continue
-            claim.status = "released"
-            claim.released_at = stamp
-            claim.released_by = by
-            claim.release_reason = RELEASE_REASON
+            claim.carried_from_run = claim.run_id
+            claim.run_id = into_run_id
             self.store.save_part_claim(claim)
-            released.append(claim)
-        return released
+            renewed.append(claim)
+        return renewed

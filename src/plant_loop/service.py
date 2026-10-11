@@ -11,7 +11,10 @@ never to the graphs directly. The service:
   record is the source of truth either way, and the two paths
   produce the same record;
 - runs the board (board graph over the case graph), persisting each
-  case record as it reaches the gate, and the board run at the end;
+  case record as it reaches the gate, and the board run at the end —
+  settling a predecessor run's carry-over first when the run names
+  one (carryover.py), and stamping the finished run with its own
+  outgoing carry-over manifest;
 - answers board/metrics/record reads from the store.
 
 A failed reasoning call is never recorded as a guess: the error is
@@ -27,6 +30,7 @@ from datetime import datetime, timezone
 from langgraph.types import Command
 from pydantic import ValidationError
 
+from . import carryover as carryover_module
 from . import economics as economics_module
 from . import handoff as handoff_module
 from . import history as history_module
@@ -276,14 +280,44 @@ class PlantService:
         cases: list[ExceptionCase],
         sink: EventSink | None = None,
         board_policy: BoardPolicy | None = None,
+        carry_over_from: str = "",
+        drop: list[dict] | None = None,
     ) -> BoardRunResult:
         """Work a list of cases through the board graph, in priority
         order, to the shift budget. Each case record is persisted as
-        it reaches the gate; the board run is saved at the end."""
+        it reaches the gate; the board run is saved at the end.
+
+        With ``carry_over_from`` naming a finished board run, this
+        run first settles that run's carry-over manifest
+        (carryover.py): blocked cases are re-worked with their
+        loop state intact, gate cases are inherited standing,
+        unworked cases join as fresh intakes, ``drop`` entries
+        leave the board audited, and the claims turn over with the
+        board. Without it, the run starts clean — no inheritance,
+        no settlement, the pre-round-7 behaviour exactly.
+        """
         sink = sink or CollectingSink()
         for case in cases:
             self._archive(case)
         run_id = f"board-{uuid.uuid4().hex[:8]}"
+        queue: list[dict] = [
+            {"case": c.model_dump(), "resume": None} for c in cases
+        ]
+        settled: dict | None = None
+        if carry_over_from:
+            predecessor = self.store.get_board_run(carry_over_from)
+            if predecessor is None:
+                raise KeyError(f"unknown board run: {carry_over_from}")
+            carried_queue, settled = carryover_module.settle(
+                self.store,
+                self.objects,
+                self.allocation,
+                predecessor,
+                into_run_id=run_id,
+                drops=drop,
+                new_case_ids={c.case_id for c in cases},
+            )
+            queue = carried_queue + queue
         case_graph = self._case_graph(sink)
         board_graph = build_board_graph(
             case_graph,
@@ -298,9 +332,7 @@ class PlantService:
         # run's duration.
         self._active_run_id = run_id
         try:
-            output = board_graph.invoke(
-                {"run_id": run_id, "queue": [c.model_dump() for c in cases]}
-            )
+            output = board_graph.invoke({"run_id": run_id, "queue": queue})
         finally:
             self._active_run_id = ""
         result = BoardRunResult.model_validate(output["board_result"])
@@ -313,8 +345,33 @@ class PlantService:
         result.economics = economics_module.board_summary(
             [r for r in worked if r is not None]
         )
+        if settled is not None:
+            result.carried_from = carry_over_from
+            result.carry_over_settled = settled
+        # The run record is the contract the next shift settles
+        # against: it carries every queued case's intake payload
+        # (worked or not), and — computed now, while the records
+        # are fresh — this run's own outgoing carry-over manifest.
+        case_payloads = {
+            entry["case"]["case_id"]: entry["case"] for entry in queue
+        }
+        draft_payload = result.model_dump()
+        draft_payload["case_payloads"] = case_payloads
+        manifest = carryover_module.compute_manifest(self.store, draft_payload)
+        result.carry_over = manifest
+        extra_lines: list[str] = []
+        if settled is not None:
+            extra_lines += carryover_module.settled_lines(settled)
+        extra_lines += carryover_module.manifest_lines(manifest)
+        if extra_lines:
+            result.handoff_summary = (
+                result.handoff_summary.rstrip("\n")
+                + "\n"
+                + "\n".join(extra_lines)
+            )
         payload = result.model_dump()
         payload["cases"] = [r.model_dump() if r else {} for r in worked]
+        payload["case_payloads"] = case_payloads
         self.store.save_board_run(payload)
         return result
 
@@ -331,6 +388,21 @@ class PlantService:
 
     def get_board_run(self, run_id: str) -> dict | None:
         return self.store.get_board_run(run_id)
+
+    def get_carry_over(self, run_id: str) -> dict:
+        """A stored run's carry-over contract: the manifest it
+        offers the next shift, and — for a run that itself accepted
+        carry-over — how its inheritance settled. Runs saved
+        before manifests existed answer with empty sections."""
+        run = self.store.get_board_run(run_id)
+        if run is None:
+            raise KeyError(f"unknown board run: {run_id}")
+        return {
+            "run_id": run_id,
+            "carried_from": run.get("carried_from", ""),
+            "carry_over": run.get("carry_over", []),
+            "carry_over_settled": run.get("carry_over_settled", {}),
+        }
 
     def diagnosis_stats(self) -> dict:
         return stats_module.diagnosis_stats(
