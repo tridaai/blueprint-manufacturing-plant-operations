@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trida AI Blueprint — Plant Operations Loop Agent</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+  :root { --indigo:#4F46E5; --ink:#0A0A0A; --muted:#6B7280; --line:#E5E7EB; --bg:#FFFFFF; --soft:#F9FAFB; --bad:#B91C1C; --good:#047857; --warn:#B45309; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color:var(--ink); background:var(--bg); }
+  header { border-bottom:1px solid var(--line); padding:18px 28px; }
+  .header-inner { max-width:1440px; margin:0 auto; display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  header img { height:38px; }
+  header h1 { font-size:19px; margin:0; font-weight:700; }
+  header h1 .slash { color:var(--muted); font-weight:400; margin:0 2px; }
+  header h1 .accent { color:var(--indigo); }
+  .info-chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+  .info-chip { display:inline-block; padding:3px 10px; border:1px solid var(--line); border-radius:999px; font-size:11.5px; color:var(--muted); line-height:1.4; }
+  .gh-link { margin-left:auto; display:flex; flex-direction:column; align-items:center; gap:3px; color:var(--ink); text-decoration:none; flex-shrink:0; padding:6px 10px; border-radius:8px; border:1px solid var(--line); background:var(--soft); }
+  .gh-link svg { display:block; }
+  .gh-link span { font-size:11px; font-weight:600; color:var(--muted); }
+  .gh-link:hover { border-color:var(--indigo); background:#EEF2FF; }
+  .gh-link:hover span { color:var(--indigo); }
+  main { max-width:1440px; margin:0 auto; padding:22px 28px 60px; display:grid; grid-template-columns: 400px 1fr; gap:22px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin-bottom:18px; background:#fff; overflow-x:auto; }
+  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.06em; color:var(--indigo); margin:0 0 12px; }
+  h3 { font-size:13px; margin:16px 0 6px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
+  select, textarea, input[type=text] { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:8px; font:inherit; font-size:13px; background:#fff; }
+  textarea { min-height:170px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
+  button { font:inherit; font-size:13px; padding:8px 14px; border-radius:8px; border:1px solid var(--line); background:var(--soft); cursor:pointer; }
+  button.primary { background:var(--indigo); border-color:var(--indigo); color:#fff; font-weight:600; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:600; background:#EEF2FF; color:var(--indigo); }
+  .pill.bad { background:#FEF2F2; color:var(--bad); }
+  .pill.good { background:#ECFDF5; color:var(--good); }
+  .pill.warn { background:#FFFBEB; color:var(--warn); }
+  .kv { display:grid; grid-template-columns: 150px 1fr; gap:4px 12px; font-size:13.5px; }
+  .kv dt { color:var(--muted); } .kv dd { margin:0; }
+  pre { white-space:pre-wrap; word-break:break-word; background:var(--soft); border:1px solid var(--line); border-radius:8px; padding:12px; font-size:12.5px; max-height:380px; overflow:auto; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; }
+  ul { margin:6px 0; padding-left:18px; font-size:13.5px; }
+  .note { color:var(--muted); font-size:12.5px; }
+  .flag { color:var(--bad); font-weight:600; font-size:13px; }
+  .check-pass { color:var(--good); font-weight:600; } .check-fail { color:var(--bad); font-weight:600; }
+  .empty { color:var(--muted); font-size:13.5px; }
+  tr.clickable { cursor:pointer; } tr.clickable:hover { background:var(--soft); }
+  footer { max-width:1440px; margin:0 auto; padding:20px 28px 30px; border-top:1px solid var(--line); color:var(--muted); font-size:12.5px; }
+  .footer-brand { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
+  .footer-brand img { height:32px; width:auto; opacity:.8; }
+  .footer-brand a { color:var(--indigo); text-decoration:none; font-weight:600; font-size:12.5px; }
+  .footer-brand a:hover { text-decoration:underline; }
+  .banner { border-radius:8px; padding:10px 14px; font-size:14px; font-weight:600; margin-bottom:14px; border:1px solid var(--line); }
+  .banner.good { background:#ECFDF5; color:var(--good); border-color:#A7F3D0; }
+  .banner.bad { background:#FEF2F2; color:var(--bad); border-color:#FECACA; }
+  .banner.warn { background:#FFFBEB; color:var(--warn); border-color:#FDE68A; }
+  .banner.info { background:#EEF2FF; color:var(--indigo); border-color:#C7D2FE; }
+  .round-card { border:1px solid var(--line); border-left:4px solid var(--indigo); border-radius:8px; padding:10px 14px; margin:8px 0; background:var(--soft); font-size:13px; }
+  .round-card .rhead { font-weight:700; margin-bottom:4px; }
+  .gap-open { color:var(--bad); } .gap-closed { color:var(--good); }
+  .step-safety { background:#FFFBEB; border-radius:6px; padding:2px 6px; }
+  .badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:11px; font-weight:700; background:#FEF3C7; color:var(--warn); margin-left:6px; }
+</style>
+</head>
+<body>
+<header>
+<div class="header-inner">
+  <img src="/static/brand/tridaai-logo.png" alt="Trida AI">
+  <div>
+    <h1>Blueprint <span class="slash">/</span> <span class="accent">Plant Operations Loop Agent</span></h1>
+    <div class="info-chips">
+      <span class="info-chip">Reference prototype</span>
+      <span class="info-chip">Two agent loops — the board loop works the shift's exceptions in code-computed priority order; each case loops diagnose → plan → verify until it converges or escalates. The agent never issues commands to machines.</span>
+    </div>
+  </div>
+  <a class="gh-link" href="https://github.com/tridaai/blueprint-manufacturing-plant-operations" target="_blank" rel="noopener" title="View source on GitHub">
+    <svg height="22" viewBox="0 0 16 16" width="22" fill="currentColor" aria-hidden="true"><path d="M8 0c-4.42 0-8 3.58-8 8 0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"></path></svg>
+    <span>Go to code</span>
+  </a>
+</div>
+</header>
+
+<main>
+  <div>
+    <section>
+      <h2>1 · Run a case</h2>
+      <label for="sample">Bundled synthetic cases (the shift board)</label>
+      <select id="sample"></select>
+      <label for="json">…or paste case JSON</label>
+      <textarea id="json" spellcheck="false"></textarea>
+      <label for="apikey">API key (only when the server sets API_KEY)</label>
+      <input type="text" id="apikey" placeholder="optional">
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="analyze">Run case loop</button>
+        <span class="note" id="run-status"></span>
+      </div>
+    </section>
+    <section>
+      <h2>The board</h2>
+      <p class="note">Work the whole bundled board in priority order, to the shift budget — or open a case that is already waiting.</p>
+      <div class="row" style="margin:10px 0">
+        <button class="primary" id="run-board">Run the board (9 cases)</button>
+        <button id="board-refresh">Refresh</button>
+        <span class="note" id="board-status"></span>
+      </div>
+      <div id="board-run"></div>
+      <div id="board" class="empty">Loading…</div>
+    </section>
+    <section>
+      <h2>Eval results</h2>
+      <div id="evals" class="empty">Loading…</div>
+    </section>
+    <section>
+      <h2>How it works</h2>
+      <p class="note"><strong>Board loop:</strong> cases are ordered by a priority formula in code (safety &gt; line-down &gt; quality &gt; shortage &gt; maintenance, scaled by line criticality and downtime) and worked to a shift budget; the remainder is handed over in writing. <strong>Case loop:</strong> diagnose (ranked hypotheses, evidence required) → plan (steps, parts checked against the shelf, the SOP's mandatory safety steps non-removable) → verify (a critic round plus code checks). Gaps send the case back for another round — on the gaps only. Exits are decided in code: <em>converged</em>, <em>exhausted</em>, <em>blocked_external</em> (a part only the outside world can supply), <em>safety_stop</em> (safety cases escalate at round 0, always), <em>budget_exceeded</em>. Every case stops at the <strong>supervisor gate</strong> with a draft work order or escalation note. The agent never actuates anything.</p>
+    </section>
+  </div>
+
+  <div>
+    <section id="result-section">
+      <h2>2 · Loop record</h2>
+      <div id="result" class="empty">Nothing yet — run a case or open one from the board.</div>
+    </section>
+    <section id="gate-section" style="display:none">
+      <h2>3 · Supervisor gate</h2>
+      <label for="actor">Supervisor name</label>
+      <input type="text" id="actor" placeholder="e.g. A. Supervisor">
+      <label for="reason">Decision note (kept on the record)</label>
+      <input type="text" id="reason" placeholder="optional">
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="approve">Approve draft</button>
+        <button id="reject">Reject</button>
+        <span class="note" id="gate-status"></span>
+      </div>
+      <p class="note">Approving records that a supervisor accepted this draft. The system itself issues no commands, marks no work performed, and closes no case — the supervisor takes it from here, outside this tool.</p>
+    </section>
+  </div>
+</main>
+
+<footer>
+  <div class="footer-brand">
+    <img src="/static/brand/tridaai-logo.png" alt="Trida AI">
+    <span>Trida AI — <a href="https://trida.ai/blog?category=blueprints&utm_source=github&utm_medium=blueprint-console&utm_campaign=plant-operations-loop" target="_blank" rel="noopener">Visit Trida AI →</a> · <a href="https://trida.ai/blog?category=blueprints" target="_blank" rel="noopener">View all blueprints →</a></span>
+  </div>
+  Reference prototype. The plant, its SOPs, histories, parts and cases are synthetic. Reasoning by Muse Spark (Meta Model API) when configured; the offline rules backend runs the same loops with no keys.
+</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let samples = [];
+let current = null;
+
+function headers() {
+  const key = $("apikey").value.trim();
+  return key ? { "Content-Type": "application/json", "X-API-Key": key } : { "Content-Type": "application/json" };
+}
+async function call(path, options = {}) {
+  const resp = await fetch(path, { headers: headers(), ...options });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(body.detail || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+function esc(text) {
+  return String(text ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+async function loadSamples() {
+  samples = await call("/samples");
+  $("sample").innerHTML = samples.map((c, i) =>
+    `<option value="${i}">${esc(c.case_id)} — ${esc(c.type)} · ${esc(c.machine_id || "—")} · ${esc(c.title)}</option>`).join("");
+  $("json").value = JSON.stringify(samples[0], null, 1);
+}
+$("sample").addEventListener("change", () => {
+  $("json").value = JSON.stringify(samples[Number($("sample").value)], null, 1);
+});
+
+const EXIT_LABEL = {
+  converged: ["CONVERGED — plan verified clean; draft work order below", "good"],
+  exhausted: ["EXHAUSTED — rounds ran out with gaps open; escalation drafted", "warn"],
+  blocked_external: ["BLOCKED EXTERNAL — waiting on parts/vendor; escalation drafted", "warn"],
+  safety_stop: ["SAFETY STOP — escalated at round 0; a supervisor owns this case", "bad"],
+  budget_exceeded: ["BUDGET EXCEEDED — case token budget spent; escalation drafted", "warn"],
+};
+
+function renderResult(r) {
+  current = r;
+  const [label, tone] = EXIT_LABEL[r.exit_reason] || [r.exit_reason, "info"];
+  const top = (r.diagnosis.hypotheses || [])[0];
+  let html = `<div class="banner ${tone}">${esc(label)}</div>`;
+  html += `<dl class="kv">
+    <dt>Case</dt><dd>${esc(r.case_id)} — ${esc(r.title)}</dd>
+    <dt>Type / machine</dt><dd>${esc(r.type)} · ${esc(r.machine_id || "—")} (${esc(r.line_id || "—")})</dd>
+    <dt>Priority</dt><dd>${r.priority} <span class="note">${esc(r.priority_reason)}</span></dd>
+    <dt>Status</dt><dd>${esc(r.status)}${r.decision ? ` — ${esc(r.decision)} by ${esc(r.decision_by || "supervisor")}` : ""}</dd>
+    <dt>Loop telemetry</dt><dd>${esc(r.telemetry.backend)} (${esc(r.telemetry.model)}) · ${r.rounds.length} round(s) · ${r.telemetry.input_tokens}+${r.telemetry.output_tokens} tokens · est. $${r.telemetry.estimated_cost_usd ?? "—"}</dd>
+  </dl>`;
+  if (r.injection_flags && r.injection_flags.length) {
+    html += `<h3>Injection screen</h3>` + r.injection_flags.map((f) => `<div class="flag">⚠ ${esc(f)}</div>`).join("");
+  }
+  html += `<h3>Loop timeline</h3>`;
+  if (!r.rounds.length) {
+    html += `<p class="note">No rounds — this case exited at round 0 by rule (safety cases never enter diagnosis).</p>`;
+  }
+  for (const round of r.rounds) {
+    html += `<div class="round-card"><div class="rhead">Round ${round.round} — top: ${esc(round.top_fault_class || "—")} · ${round.steps} plan step(s) · ${round.input_tokens}+${round.output_tokens} tokens</div>
+      <div>gaps opened: <span class="gap-open">${round.gaps_opened.length ? esc(round.gaps_opened.join(", ")) : "none"}</span> ·
+      gaps closed: <span class="gap-closed">${round.gaps_closed.length ? esc(round.gaps_closed.join(", ")) : "none"}</span></div></div>`;
+  }
+  if (top) {
+    html += `<h3>Diagnosis</h3><dl class="kv"><dt>Top hypothesis</dt><dd><strong>${esc(top.fault_class)}</strong> — confidence ${Number(top.confidence).toFixed(2)} · SOP ${esc(top.sop_id || "—")}</dd></dl>`;
+    html += `<ul>` + (r.diagnosis.hypotheses || []).map((h) =>
+      `<li><strong>${esc(h.fault_class)}</strong> (${Number(h.confidence).toFixed(2)}) — ${esc(h.statement)}<br><span class="note">${(h.evidence || []).map(esc).join(" · ")}</span></li>`).join("") + `</ul>`;
+  }
+  if (r.plan && r.plan.steps && r.plan.steps.length) {
+    html += `<h3>Plan</h3><table><tr><th>#</th><th>Step</th><th>Kind</th><th>Part</th></tr>` +
+      r.plan.steps.map((s, i) => `<tr><td>${i + 1}</td><td class="${s.kind === "safety" ? "step-safety" : ""}">${esc(s.text)}${s.mandatory ? '<span class="badge">MANDATORY SAFETY</span>' : ""}</td><td>${esc(s.kind)}</td><td>${esc(s.part_id || "—")}${s.qty ? " ×" + s.qty : ""}</td></tr>`).join("") + `</table>`;
+    if (r.plan.required_parts && r.plan.required_parts.length) {
+      html += `<p class="note">Parts: ` + r.plan.required_parts.map((p) =>
+        `${esc(p.part_id)} ×${p.qty} — ${p.satisfied ? (p.substitute_part_id ? "substitute " + esc(p.substitute_part_id) + " on hand" : p.available_qty + " on hand") : "UNAVAILABLE (" + p.available_qty + " on hand)"}`).join(" · ") +
+        ` · est. downtime ${r.plan.estimated_downtime_min} min</p>`;
+    }
+  }
+  if (r.open_gaps && r.open_gaps.length) {
+    html += `<h3>Open gaps</h3><ul>` + r.open_gaps.map((g) => `<li><strong>${esc(g.kind)}</strong>${g.safety ? ' <span class="badge">SAFETY</span>' : ""} — ${esc(g.detail)}</li>`).join("") + `</ul>`;
+  }
+  html += `<h3>Guardrails</h3><ul>` + (r.guardrails.checks || []).map((c) =>
+    `<li><span class="${c.passed ? "check-pass" : "check-fail"}">${c.passed ? "PASS" : "FAIL"}</span> ${esc(c.name)} — <span class="note">${esc(c.detail)}</span></li>`).join("") + `</ul>`;
+  html += `<h3>Draft (${esc(r.draft.kind || "—")})</h3><pre>${esc(r.draft.text || "")}</pre>`;
+  html += `<p class="note">${esc(r.gate_notice)}</p>`;
+  $("result").innerHTML = html;
+  $("gate-section").style.display = r.status === "awaiting_supervisor" ? "" : "none";
+}
+
+$("analyze").addEventListener("click", async () => {
+  $("run-status").textContent = "running the case loop…";
+  try {
+    const payload = JSON.parse($("json").value);
+    const result = await call("/cases/analyze", { method: "POST", body: JSON.stringify(payload) });
+    renderResult(result);
+    $("run-status").textContent = `exit: ${result.exit_reason} — waiting at the supervisor gate`;
+    loadBoard();
+  } catch (err) {
+    $("run-status").textContent = `error: ${err.message}`;
+  }
+});
+
+async function loadBoard() {
+  try {
+    const rows = await call("/board");
+    if (!rows.length) { $("board").innerHTML = `<span class="empty">Nothing waiting — run a case or the board.</span>`; return; }
+    $("board").innerHTML = `<table><tr><th>Case</th><th>Type</th><th>Machine</th><th>Priority</th><th>Exit</th><th>Rounds</th></tr>` +
+      rows.map((r) => `<tr class="clickable" data-case="${esc(r.case_id)}"><td>${esc(r.case_id)}</td><td>${esc(r.type)}</td><td>${esc(r.machine_id || "—")}</td><td>${r.priority}</td><td>${esc(r.exit_reason)}</td><td>${r.rounds}</td></tr>`).join("") + `</table>`;
+    document.querySelectorAll("#board tr.clickable").forEach((tr) => {
+      tr.addEventListener("click", async () => {
+        try { renderResult(await call(`/cases/${tr.dataset.case}`)); } catch (err) { alert(err.message); }
+      });
+    });
+  } catch (err) {
+    $("board").innerHTML = `<span class="empty">error: ${esc(err.message)}</span>`;
+  }
+}
+$("board-refresh").addEventListener("click", loadBoard);
+
+$("run-board").addEventListener("click", async () => {
+  $("board-status").textContent = "working the board…";
+  try {
+    const run = await call("/board/run", { method: "POST", body: JSON.stringify({}) });
+    let html = `<h3>Board run ${esc(run.run_id)} — ${esc(run.status)}</h3><table><tr><th>#</th><th>Case</th><th>Exit</th></tr>` +
+      run.processed.map((cid, i) => `<tr><td>${i + 1}</td><td>${esc(cid)}</td><td>${esc(run.exits[cid] || "")}</td></tr>`).join("") + `</table>`;
+    if (run.remaining.length) {
+      html += `<p class="flag">Not worked: ` + run.remaining.map((x) => `${esc(x.case_id)} (${esc(x.reason)})`).join(", ") + `</p>`;
+    }
+    html += `<pre>${esc(run.handoff_summary)}</pre>`;
+    $("board-run").innerHTML = html;
+    $("board-status").textContent = `${run.processed.length} case(s) at the gate`;
+    loadBoard();
+  } catch (err) {
+    $("board-status").textContent = `error: ${err.message}`;
+  }
+});
+
+async function decide(decision) {
+  if (!current) return;
+  $("gate-status").textContent = "recording…";
+  try {
+    const record = await call(`/cases/${current.case_id}/decision`, {
+      method: "POST",
+      body: JSON.stringify({ decision, by: $("actor").value.trim(), reason: $("reason").value.trim() }),
+    });
+    renderResult(record);
+    $("gate-status").textContent = `recorded: ${record.status}`;
+    loadBoard();
+  } catch (err) {
+    $("gate-status").textContent = `error: ${err.message}`;
+  }
+}
+$("approve").addEventListener("click", () => decide("approved"));
+$("reject").addEventListener("click", () => decide("rejected"));
+
+async function loadEvals() {
+  try {
+    const data = await call("/evals/results");
+    if (data && data.available === false) { $("evals").textContent = data.note || "No eval results packaged yet."; return; }
+    $("evals").innerHTML = `<dl class="kv"><dt>Golden pack</dt><dd>${data.passed}/${data.total} cases · gate ${data.gate_passed ? '<span class="check-pass">PASS</span>' : '<span class="check-fail">FAIL</span>'}</dd><dt>Backend</dt><dd>${esc(data.backend || "")}</dd></dl>`;
+  } catch (err) {
+    $("evals").textContent = `error: ${err.message}`;
+  }
+}
+
+loadSamples().then(loadBoard).then(loadEvals).catch((err) => {
+  $("board").textContent = `failed to load: ${err.message}`;
+});
+</script>
+</body>
+</html>
