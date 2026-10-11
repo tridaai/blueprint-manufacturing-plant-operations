@@ -38,6 +38,20 @@ def main(argv: list[str] | None = None) -> int:
 
     board = sub.add_parser("board", help="work the bundled sample board")
     board.add_argument("--max-cases", type=int, default=None)
+    board.add_argument(
+        "--carry-over-from",
+        default="",
+        help="a finished board run id whose board this run inherits (carryover.py)",
+    )
+    board.add_argument(
+        "--drop",
+        action="append",
+        default=[],
+        metavar="CASE_ID",
+        help="drop a carried case at acceptance (repeatable; pair with --by/--reason)",
+    )
+    board.add_argument("--by", default="", help="who is dropping (with --drop)")
+    board.add_argument("--reason", default="", help="why (with --drop)")
 
     show = sub.add_parser("show", help="print a stored case record")
     show.add_argument("case_id")
@@ -64,7 +78,17 @@ def main(argv: list[str] | None = None) -> int:
                 max_cases=args.max_cases if args.max_cases is not None else service.board_policy.max_cases,
                 board_token_budget=service.board_policy.board_token_budget,
             )
-            result = service.run_board(load_sample_cases(), sink=PrintingSink(), board_policy=policy)
+            drops = [
+                {"case_id": case_id, "by": args.by, "reason": args.reason}
+                for case_id in args.drop
+            ]
+            result = service.run_board(
+                load_sample_cases(),
+                sink=PrintingSink(),
+                board_policy=policy,
+                carry_over_from=args.carry_over_from or "",
+                drop=drops or None,
+            )
             print(result.model_dump_json(indent=1))
         elif args.command == "show":
             record = service.get_record(args.case_id)

@@ -13,8 +13,16 @@ every route delegates, none re-implements. Notable behaviour:
   call is a 502 with the translated error, never a half-record;
 - ``POST /board/run`` works a list of cases (or the bundled board)
   through the board loop in priority order, to the shift budget;
-- ``POST /cases/{id}/decision`` records approve/reject — the ONLY
-  way a case leaves ``awaiting_supervisor``;
+  with ``carry_over_from`` naming a finished run it first settles
+  that run's carry-over manifest (carryover.py) — blocked cases
+  re-worked with their loop state, gate cases inherited standing,
+  ``drop`` entries leaving the board audited;
+- ``GET /board/runs/{run_id}/carry-over`` returns a stored run's
+  carry-over contract: the manifest it offers the next shift, and
+  how its own inheritance settled;
+- ``POST /cases/{id}/decision`` records approve/reject — with the
+  carry-over drop, the only ways a case leaves
+  ``awaiting_supervisor``;
 - ``POST /api/cases/{id}/outcome`` records what actually happened
   after the gate (the plan's disposition, the confirmed fault, the
   real downtime) — the ground truth behind ``GET
@@ -246,6 +254,13 @@ class BoardRunRequest(BaseModel):
     cases: list[dict] | None = None  # omit for the bundled sample board
     max_cases: int | None = None
     max_tokens: int | None = None
+    # Carry-over (carryover.py): name a finished board run to
+    # inherit its board — blocked cases re-worked with their loop
+    # state, gate cases inherited standing, unworked cases joined
+    # fresh, claims turned over. Omit: the run starts clean.
+    carry_over_from: str = ""
+    # Cases to drop at that acceptance: [{case_id, by, reason}].
+    drop: list[dict] = []
 
 
 @app.get("/samples")
@@ -303,7 +318,17 @@ def run_board(body: BoardRunRequest, request: Request):
             body.max_tokens if body.max_tokens is not None else service.board_policy.board_token_budget
         ),
     )
-    result = service.run_board(cases, board_policy=policy)
+    try:
+        result = service.run_board(
+            cases,
+            board_policy=policy,
+            carry_over_from=body.carry_over_from or "",
+            drop=body.drop or None,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     return result.model_dump()
 
 
@@ -313,6 +338,18 @@ def get_board_run(run_id: str):
     if run is None:
         raise HTTPException(status_code=404, detail=f"unknown board run: {run_id}")
     return run
+
+
+@app.get("/board/runs/{run_id}/carry-over")
+def get_carry_over(run_id: str):
+    """A board run's carry-over contract: the manifest it offers
+    the next shift, and how its own inheritance settled."""
+    try:
+        return get_service().get_carry_over(run_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail=f"unknown board run: {run_id}"
+        ) from None
 
 
 @app.get("/metrics")

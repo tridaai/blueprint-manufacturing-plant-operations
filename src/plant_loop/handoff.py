@@ -188,7 +188,33 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
         },
     }
 
+    # Carry-over: the latest board run's outgoing manifest — the
+    # unfinished business the next shift is offered, with what
+    # each case is waiting on — and, when the latest run itself
+    # accepted a predecessor's board, how that inheritance
+    # settled (the claims renewed and released at the turnover).
     runs = store.all_board_runs()
+    carry_over = None
+    if runs:
+        # The most recently saved run (the store's own ordering) —
+        # its manifest is the offer currently on the table.
+        latest_any = runs[-1]
+        manifest = latest_any.get("carry_over") or []
+        if manifest:
+            standing = {
+                c.case_id
+                for c in store.all_part_claims()
+                if c.status == "claimed"
+            }
+            carry_over = {
+                "run_id": latest_any.get("run_id", ""),
+                "entries": manifest,
+                "claims_standing_on_carried": sum(
+                    1 for e in manifest if e["case_id"] in standing
+                ),
+                "settled": latest_any.get("carry_over_settled") or {},
+            }
+
     last_run = None
     if runs:
         latest = max(runs, key=lambda run: (run.get("created_at", ""), run.get("run_id", "")))
@@ -229,6 +255,7 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
         "reliability_items": reliability_items,
         "confirmed_faults": confirmed_faults,
         "economics": economics,
+        "carry_over": carry_over,
         "last_board_run": last_run,
     }
 
@@ -339,6 +366,37 @@ def render_text(handoff: dict) -> str:
         lines.append(text)
     else:
         lines.append("  Closed cases: no recorded actuals yet")
+    carry = handoff.get("carry_over")
+    lines += ["", "CARRY-OVER — THE NEXT SHIFT INHERITS THIS BOARD:"]
+    if not carry:
+        lines.append("  (no board run has offered carry-over yet)")
+    else:
+        lines.append(
+            f"  From board run {carry['run_id']} — "
+            f"{len(carry['entries'])} case(s) carry over:"
+        )
+        for entry in carry["entries"]:
+            lines.append(
+                f"  - {entry['case_id']} · {entry['kind'].replace('_', ' ')} · "
+                f"waiting on: {entry['waiting_on']}"
+            )
+        settled = carry.get("settled") or {}
+        if settled:
+            lines.append(
+                f"  At the last turnover: {len(settled.get('renewed_claims', []))} "
+                f"claim(s) renewed for carry-over, "
+                f"{len(settled.get('released_claims', []))} claim(s) released "
+                "— run ended."
+            )
+            if settled.get("dropped"):
+                lines.append(
+                    f"  Dropped at acceptance: {', '.join(settled['dropped'])}"
+                )
+        elif carry["claims_standing_on_carried"]:
+            lines.append(
+                f"  {carry['claims_standing_on_carried']} claim(s) stand on "
+                "the carried cases until a successor run accepts the board."
+            )
     run = handoff["last_board_run"]
     lines += ["", "LAST BOARD RUN:"]
     if run is None:
