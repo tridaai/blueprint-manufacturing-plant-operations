@@ -22,7 +22,15 @@ import json
 
 from . import economics as economics_module
 from .config import env_str, load_dotenv
-from .schemas import BoardItem, CaseResult, HistoryEntry, PartClaim, PmObligation, PmProposal
+from .schemas import (
+    BoardItem,
+    CaseResult,
+    HistoryEntry,
+    MachineRecord,
+    PartClaim,
+    PmObligation,
+    PmProposal,
+)
 
 # The record type the store carries (the name ports.py refers to).
 CaseRecord = CaseResult
@@ -87,6 +95,15 @@ class StoreBase:
         raise NotImplementedError
 
     def all_pm_records(self) -> list[PmRecord]:
+        return []
+
+    def save_machine_record(self, record: MachineRecord) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+    def get_machine_record(self, machine_id: str) -> MachineRecord | None:  # pragma: no cover
+        raise NotImplementedError
+
+    def all_machine_records(self) -> list[MachineRecord]:
         return []
 
     def save_error(self, entry: dict) -> None:
@@ -173,6 +190,7 @@ class InMemoryStore(StoreBase):
         self._history_entries: dict[str, HistoryEntry] = {}
         self._part_claims: dict[str, PartClaim] = {}
         self._pm_records: dict[str, PmRecord] = {}
+        self._machine_records: dict[str, MachineRecord] = {}
         self._errors: list[dict] = []
 
     def save_case(self, record: CaseResult) -> None:
@@ -232,6 +250,18 @@ class InMemoryStore(StoreBase):
 
     def all_pm_records(self) -> list[PmRecord]:
         return list(self._pm_records.values())
+
+    def save_machine_record(self, record: MachineRecord) -> None:
+        # Upsert by machine: one record per machine, ever — its
+        # dispositions append to the same record as they are
+        # chosen, they do not create new ones.
+        self._machine_records[record.machine_id] = record
+
+    def get_machine_record(self, machine_id: str) -> MachineRecord | None:
+        return self._machine_records.get(machine_id)
+
+    def all_machine_records(self) -> list[MachineRecord]:
+        return list(self._machine_records.values())
 
     def save_error(self, entry: dict) -> None:
         self._errors.append(entry)
@@ -412,6 +442,35 @@ class PostgresStore(StoreBase):
             with conn.cursor() as cur:
                 cur.execute("SELECT payload FROM pm_records ORDER BY created_at, record_id")
                 return [_pm_from_payload(row[0]) for row in cur.fetchall()]
+
+    def save_machine_record(self, record: MachineRecord) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO machine_records (record_id, machine_id, status, payload) "
+                    "VALUES (%s, %s, %s, %s::jsonb) "
+                    "ON CONFLICT (machine_id) DO UPDATE SET status = EXCLUDED.status, "
+                    "payload = EXCLUDED.payload",
+                    (record.record_id, record.machine_id, record.status,
+                     record.model_dump_json()),
+                )
+            conn.commit()
+
+    def get_machine_record(self, machine_id: str) -> MachineRecord | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT payload FROM machine_records WHERE machine_id = %s",
+                    (machine_id,),
+                )
+                row = cur.fetchone()
+        return MachineRecord.model_validate(row[0]) if row else None
+
+    def all_machine_records(self) -> list[MachineRecord]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT payload FROM machine_records ORDER BY created_at, machine_id")
+                return [MachineRecord.model_validate(row[0]) for row in cur.fetchall()]
 
     def save_error(self, entry: dict) -> None:
         with self._connect() as conn:

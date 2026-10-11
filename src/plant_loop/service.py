@@ -21,6 +21,11 @@ never to the graphs directly. The service:
   is checked), records the supervisor's decision on them, and lets
   a PM cycle case's outcome — and nothing else — close or roll its
   obligation's cycle;
+- records the ends of things (lifecycle.py): a supervisor's
+  retirement of a PM obligation, and a machine's decommission —
+  which retires that machine's obligations automatically, lists
+  its open cases for the supervisor's per-case disposition, and
+  closes intake for the machine at the run paths above;
 - answers board/metrics/record reads from the store.
 
 A failed reasoning call is never recorded as a guess: the error is
@@ -40,11 +45,13 @@ from . import carryover as carryover_module
 from . import economics as economics_module
 from . import handoff as handoff_module
 from . import history as history_module
+from . import lifecycle as lifecycle_module
 from . import packet as packet_module
 from . import stats as stats_module
 from .allocation import AllocationLedger
 from .events import CollectingSink, RunEvent, format_timestamp
 from .graph import CaseRunOutcome, build_board_graph, build_case_graph
+from .lifecycle import MachineLifecycle
 from .loops import BoardPolicy, CaseLoopController, LoopPolicy, ReliabilityPolicy
 from .objectstore import payload_bytes
 from .pm import PmManager
@@ -55,6 +62,7 @@ from .schemas import (
     BoardRunResult,
     CaseResult,
     ExceptionCase,
+    MachineRecord,
     PmObligation,
     PmProposal,
     SupervisorOutcome,
@@ -101,6 +109,31 @@ class PlantService:
         return PmManager(
             self.store, ReliabilityWatch(self.store, self.reliability_policy)
         )
+
+    @property
+    def machine_lifecycle(self) -> MachineLifecycle:
+        return MachineLifecycle(self.store, self.pm_manager)
+
+    def _refuse_if_decommissioned(self, case: ExceptionCase) -> None:
+        """The intake guard (lifecycle.py): no new work for a
+        machine that no longer exists.
+
+        Applied where cases ENTER — a single run, a board run's
+        submitted cases. Cases already on the board never pass
+        through here: carried cases settle from their stored
+        records, and PM cycle cases are the obligations' own,
+        which a decommission has already retired.
+        """
+        if not case.machine_id:
+            return
+        record = self.store.get_machine_record(case.machine_id)
+        if record is not None:
+            raise ValueError(
+                f"machine {case.machine_id} is DECOMMISSIONED "
+                f"({record.record_id}, effective {record.effective_at}, "
+                f"by {record.decided_by}: {record.reason}) — new cases "
+                "for it are refused at intake"
+            )
 
     def _persist_case(self, record: CaseResult) -> None:
         """Save a case that reached the gate, claim its parts,
@@ -177,6 +210,7 @@ class PlantService:
 
     def run_case(self, case: ExceptionCase, sink: EventSink | None = None) -> CaseRunOutcome:
         """Run one case to the supervisor gate and persist the record."""
+        self._refuse_if_decommissioned(case)
         sink = sink or CollectingSink()
         self._archive(case)
         graph = self._case_graph(sink)
@@ -258,10 +292,12 @@ class PlantService:
             raise KeyError(f"unknown case: {case_id}")
         if record.outcome is not None:
             raise ValueError(f"case {case_id} already has a recorded outcome")
+        pm_obligation = self.pm_manager.obligation_for_case(case_id)
         if (
             outcome.decision == "rejected"
             and not outcome.work_performed.strip()
-            and self.pm_manager.obligation_for_case(case_id) is not None
+            and pm_obligation is not None
+            and pm_obligation.status == "standing"
         ):
             # A PM cycle case rejected without a note would defer
             # the obligation silently. The deferral's reason IS the
@@ -342,6 +378,8 @@ class PlantService:
         no settlement, the pre-round-7 behaviour exactly.
         """
         sink = sink or CollectingSink()
+        for case in cases:
+            self._refuse_if_decommissioned(case)
         for case in cases:
             self._archive(case)
         run_id = f"board-{uuid.uuid4().hex[:8]}"
@@ -532,6 +570,58 @@ class PlantService:
             interval_days=interval_days,
             last_performed_at=last_performed_at,
         )
+
+    def retire_pm_obligation(
+        self, obligation_id: str, by: str = "", reason: str = ""
+    ) -> PmObligation:
+        """Record a supervisor's manual retirement of a PM
+        obligation (pm.py): actor and reason required, one-way,
+        the reason on the record forever."""
+        return self.pm_manager.retire_obligation(obligation_id, by=by, reason=reason)
+
+    # -- machine lifecycle (lifecycle.py) -------------------------------------
+
+    def machine_records(self) -> list[MachineRecord]:
+        return self.store.all_machine_records()
+
+    def machine_state(self, machine_id: str) -> str:
+        return lifecycle_module.machine_state(self.store, machine_id)
+
+    def machine_open_cases(self, machine_id: str) -> list[CaseResult]:
+        return lifecycle_module.open_cases(self.store, machine_id)
+
+    def decommission_machine(
+        self,
+        machine_id: str,
+        by: str = "",
+        reason: str = "",
+        effective_at: str = "",
+    ) -> MachineRecord:
+        """Record a machine's decommission (lifecycle.py).
+
+        The act retires the machine's standing PM obligations
+        automatically (linked, with the fixed reason) and lists
+        its open cases on the record for disposition. It closes,
+        drops, and decides nothing about any case itself.
+        """
+        return self.machine_lifecycle.decommission(
+            machine_id, by=by, reason=reason, effective_at=effective_at
+        )
+
+    def dispose_machine_case(
+        self, machine_id: str, case_id: str, disposition: str, by: str = ""
+    ) -> MachineRecord:
+        """Record the supervisor's disposition of one open case
+        of a decommissioned machine (lifecycle.py).
+
+        Closing a case as moot releases its standing part claims,
+        the way a gate rejection's claims release (allocation.py):
+        the work will never draw them.
+        """
+        record = self.machine_lifecycle.dispose(machine_id, case_id, disposition, by=by)
+        if disposition == lifecycle_module.DISPOSITION_CLOSE_MOOT:
+            self.allocation.release_for_case(case_id, by=by)
+        return record
 
     # -- internals ---------------------------------------------------------------
 

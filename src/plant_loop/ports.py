@@ -45,6 +45,7 @@ from .schemas import (
     ExceptionCase,
     Gap,
     HistoryEntry,
+    MachineRecord,
     PartClaim,
     PmObligation,
     PmProposal,
@@ -167,6 +168,12 @@ class Store(Protocol):
     def get_pm_record(self, record_id: str) -> "PmProposal | PmObligation | None": ...
 
     def all_pm_records(self) -> list["PmProposal | PmObligation"]: ...
+
+    def save_machine_record(self, record: "MachineRecord") -> None: ...
+
+    def get_machine_record(self, machine_id: str) -> "MachineRecord | None": ...
+
+    def all_machine_records(self) -> list["MachineRecord"]: ...
 
     def save_error(self, entry: dict) -> None: ...
 

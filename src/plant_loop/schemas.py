@@ -313,11 +313,17 @@ class PmObligation(BaseModel):
     case currently on the board, and the deferral history: a
     deferred PM rolls its due point forward by the plant model's
     deferral step, with the supervisor's reason kept.
+
+    An obligation ends only by retirement, and retirement is
+    one-way: a supervisor retires it with a reason, or its
+    machine's decommission (lifecycle.py) retires it automatically
+    with the linkage on the record. The record is never deleted —
+    why the plant stopped owing this inspection stays readable.
     """
 
     obligation_id: str
     kind: str = "obligation"  # the pm_records kind column
-    status: str = "standing"  # standing (obligations do not lapse)
+    status: str = "standing"  # standing | retired (retirement is one-way)
     proposal_id: str = ""
     machine_id: str = ""
     fault_class: str = ""
@@ -340,6 +346,60 @@ class PmObligation(BaseModel):
     cycles_completed: int = 0
     last_cycle: dict = Field(default_factory=dict)  # {case_id, result, at, by}
     deferrals: list[dict] = Field(default_factory=list)
+    created_at: str = ""
+    # Retirement (lifecycle.py / pm.py): a supervisor ends the
+    # obligation — by hand, with their own reason, or automatically
+    # when its machine is decommissioned (kind
+    # "machine_decommission", the reason fixed as "machine
+    # decommissioned", and decommission_id linking the machine
+    # record that ended it). Retirement is one-way: the record
+    # keeps the reason forever, surfaces no further due cases, and
+    # nothing un-retires it — a pattern that returns earns a fresh
+    # proposal, and a fresh approval creates a NEW obligation.
+    retired_at: str = ""
+    retired_by: str = ""
+    retirement_reason: str = ""
+    retirement_kind: str = ""  # manual | machine_decommission
+    decommission_id: str = ""  # the MachineRecord, when auto-retired
+
+
+class MachineRecord(BaseModel):
+    """A machine's recorded end: the decommission a supervisor declared.
+
+    The plant model (kb.json) says which machines exist; it is
+    authored data and never changes at runtime. Whether a machine
+    still stands on the floor is a runtime fact, so it lives here,
+    as a record (migration 0007): a supervisor decommissions a
+    machine — actor and reason required, effective from a stated
+    moment in the record-timestamp idiom — and the record carries
+    everything the act set in motion: the standing PM obligations
+    it retired automatically, and the machine's open board cases
+    as they stood at that moment, each waiting for the
+    supervisor's own disposition (kept, or closed as moot) —
+    nothing about a case is decided by the decommission itself.
+
+    One record per machine, ever: a machine is decommissioned
+    once. The record is never deleted and never edited backwards;
+    dispositions append to it as they are chosen.
+    """
+
+    record_id: str  # DEC-<random hex>
+    machine_id: str
+    status: str = "decommissioned"  # the only state a record marks
+    reason: str = ""  # the supervisor's reason (required)
+    decided_by: str = ""  # the supervisor (required)
+    decided_at: str = ""  # when the act was recorded
+    effective_at: str = ""  # the stated moment it takes effect
+    # The standing obligations the act retired automatically,
+    # by obligation id (each obligation carries the link back).
+    retired_obligation_ids: list[str] = Field(default_factory=list)
+    # The machine's open cases at the moment of the act — the
+    # list the supervisor disposes from, one by one.
+    open_case_ids: list[str] = Field(default_factory=list)
+    # The dispositions, as chosen: [{case_id, disposition, by,
+    # at}] with disposition keep | close_moot. A case appears
+    # once — a disposition is a recorded decision, not an edit.
+    dispositions: list[dict] = Field(default_factory=list)
     created_at: str = ""
 
 
@@ -482,7 +542,9 @@ class CaseResult(BaseModel):
     case_id: str
     # awaiting_supervisor | approved | rejected | dropped (a
     # carried case the supervisor dropped when the next shift
-    # accepted the board — carryover.py; the stamp is below).
+    # accepted the board — carryover.py; the stamp is below) |
+    # closed_moot (its machine was decommissioned and the
+    # supervisor disposed it as moot — lifecycle.py; stamp below).
     status: str = "awaiting_supervisor"
     exit_reason: str = ""
     type: str = ""
@@ -512,6 +574,14 @@ class CaseResult(BaseModel):
     # leaves the board (status "dropped"); the stamp is the audit
     # trail. Empty for every case that was never dropped.
     dropped_from_board: dict = Field(default_factory=dict)
+    # When the case's machine was decommissioned and the
+    # supervisor chose this case's disposition as close-as-moot:
+    # {decommission_id, machine_id, by, at}. The case leaves the
+    # board (status "closed_moot") — closed by a supervisor's
+    # recorded choice on the decommission record, never by the
+    # decommission itself and never by the agent. Empty for every
+    # case that was never closed this way.
+    closed_as_moot: dict = Field(default_factory=dict)
     # What actually happened after the gate, when recorded.
     outcome: SupervisorOutcome | None = None
     # The case priced in downtime dollars (economics.py). Stamped

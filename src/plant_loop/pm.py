@@ -53,6 +53,20 @@ accepts the board (carryover.py) rolls like a deferral, with the
 drop's own by/reason on the deferral entry — the supervisor said
 "not this shift" out loud, and the obligation believes them.
 
+An obligation ends only by **retirement**, and retirement is
+one-way. A supervisor retires one by hand — actor and reason
+required, both on the record — or a machine's decommission
+(lifecycle.py) retires its standing obligations automatically,
+with the fixed reason "machine decommissioned" and the
+decommission's id linked, so the two endings stay distinguishable
+forever. A retired obligation surfaces no further due cases, its
+cycles no longer close or roll (a kept cycle case's outcome is
+the case's own business), and its proposal's evidence joins the
+watermark: the pattern must earn a *fresh* threshold before a
+new proposal drafts, and a fresh approval creates a new
+obligation — nothing un-retires the old one. A decommissioned
+machine drafts nothing at all: there is no floor left to inspect.
+
 Storage follows the house precedent (migration 0006): proposals
 and obligations are PM records in their own table, because a
 decision may land days after the draft and a due point weeks
@@ -146,6 +160,15 @@ class PmManager:
                 return obligation
         return None
 
+    def machine_decommissioned(self, machine_id: str) -> bool:
+        """Whether the machine's decommission stands on record.
+
+        Read from the machine records (lifecycle.py): a record's
+        existence IS the state — the plant model names the
+        machines, the records say which of them are gone.
+        """
+        return self.store.get_machine_record(machine_id) is not None
+
     def _pm_case_ids(self) -> set[str]:
         """Every cycle case ever surfaced — the evidence exclusion."""
         return {cid for o in self.obligations() for cid in o.cycle_case_ids}
@@ -171,6 +194,8 @@ class PmManager:
         fault_class = effective_fault_class(trigger)
         if not machine_id or not fault_class:
             return None
+        if self.machine_decommissioned(machine_id):
+            return None  # a gone machine drafts nothing — no floor to inspect
         pm_case_ids = self._pm_case_ids()
         if trigger.case_id in pm_case_ids:
             return None  # an inspection is not a recurrence
@@ -182,15 +207,25 @@ class PmManager:
         ]
         if any(p.status == "proposed" for p in proposals):
             return None  # one open proposal per pair at a time
-        if any(
-            o.machine_id == machine_id and o.fault_class == fault_class
+        pair_obligations = [
+            o
             for o in self.obligations()
-        ):
+            if o.machine_id == machine_id and o.fault_class == fault_class
+        ]
+        if any(o.status == "standing" for o in pair_obligations):
             return None  # the plant is already acting on this pattern
+        # The watermark: evidence already spent — cited by a
+        # rejected proposal, or by the proposal whose obligation a
+        # supervisor has since retired. Retirement ends the duty,
+        # not the evidence's spentness: the pattern must recur
+        # freshly before it earns a new proposal.
+        retired_proposal_ids = {
+            o.proposal_id for o in pair_obligations if o.status == "retired"
+        }
         watermark = {
             entry["case_id"]
             for p in proposals
-            if p.status == "rejected"
+            if p.status == "rejected" or p.proposal_id in retired_proposal_ids
             for entry in p.evidence
         }
         contributing = self.watch.contributing_cases(machine_id, fault_class, now=moment)
@@ -350,6 +385,71 @@ class PmManager:
         self.store.save_pm_record(obligation)
         return proposal, obligation
 
+    # -- retirement --------------------------------------------------------------
+
+    def retire_obligation(
+        self,
+        obligation_id: str,
+        *,
+        by: str = "",
+        reason: str = "",
+        kind: str = "manual",
+        decommission_id: str = "",
+        now: datetime | None = None,
+    ) -> PmObligation:
+        """End a standing obligation, on the record, one-way.
+
+        The manual path is a supervisor's act: actor and reason
+        are both required — an obligation the plant stops owing
+        must say who stopped it and why, the same discipline as a
+        rejected proposal. The machine path (kind
+        "machine_decommission", called by lifecycle.py when a
+        machine is decommissioned) carries the act's fixed reason
+        and the decommission record's id, so an automatic
+        retirement never reads as a supervisor's judgement call.
+
+        A retired obligation surfaces no further due cases and its
+        cycles no longer close or roll; the record itself is never
+        deleted, and there is no un-retire — a returning pattern
+        earns a fresh proposal (its old evidence is watermarked),
+        and a fresh approval creates a new obligation.
+        """
+        record = self.store.get_pm_record(obligation_id)
+        if record is None or not isinstance(record, PmObligation):
+            raise KeyError(f"unknown PM obligation: {obligation_id}")
+        obligation = record
+        if obligation.status != "standing":
+            raise ValueError(
+                f"obligation {obligation_id} is already {obligation.status} — "
+                "retirement is recorded once, and it is one-way"
+            )
+        if kind not in ("manual", "machine_decommission"):
+            raise ValueError(f"unknown retirement kind: {kind!r}")
+        if not by.strip():
+            raise ValueError(
+                "retiring an obligation needs the actor — the record must "
+                "say whose act ended it"
+            )
+        if not reason.strip():
+            raise ValueError(
+                "retiring an obligation needs the reason — the record must "
+                "say why the plant stopped owing this inspection"
+            )
+        if kind == "machine_decommission" and not decommission_id:
+            raise ValueError(
+                "a machine-decommission retirement must link the "
+                "decommission record that caused it"
+            )
+        moment = now or datetime.now(timezone.utc)
+        obligation.status = "retired"
+        obligation.retired_at = format_timestamp(moment)
+        obligation.retired_by = by
+        obligation.retirement_reason = reason
+        obligation.retirement_kind = kind
+        obligation.decommission_id = decommission_id
+        self.store.save_pm_record(obligation)
+        return obligation
+
     # -- the board remembering the date -----------------------------------------
 
     def due_cases(self, *, now: datetime | None = None) -> list[ExceptionCase]:
@@ -359,13 +459,17 @@ class PmManager:
         no cycle already open, sends one maintenance_alert case.
         The cycle opens on the obligation as the case is built —
         so two boards, or one board read twice, never surface the
-        same cycle twice.
+        same cycle twice. A retired obligation is not standing:
+        it never sends another case, however far past its due
+        point the board runs.
         """
         moment = now or datetime.now(timezone.utc)
         cases: list[ExceptionCase] = []
         for obligation in sorted(
             self.obligations(), key=lambda o: (o.next_due_at, o.obligation_id)
         ):
+            if obligation.status != "standing":
+                continue  # retired: the duty ended, on the record
             if obligation.cycle_case_id:
                 continue  # a cycle is already on a board somewhere
             due = parse_timestamp(obligation.next_due_at)
@@ -432,6 +536,13 @@ class PmManager:
         obligation = self.obligation_for_case(record.case_id)
         if obligation is None:
             return None
+        if obligation.status != "standing":
+            # Retired while this cycle case stood open (its
+            # supervisor kept it at the decommission): the outcome
+            # is the case's own ground truth and lands on the case
+            # record — it does not stamp, roll, or resurrect an
+            # obligation whose duty already ended on the record.
+            return obligation
         at = parse_timestamp(outcome.recorded_at) or datetime.now(timezone.utc)
         if outcome.decision in _PERFORMED_DECISIONS:
             obligation.last_performed_at = outcome.recorded_at
@@ -484,6 +595,8 @@ class PmManager:
         obligation = self.obligation_for_case(case_id)
         if obligation is None:
             return None
+        if obligation.status != "standing":
+            return obligation  # retired: nothing rolls for a duty that ended
         moment = now or datetime.now(timezone.utc)
         rolled = moment + timedelta(days=int(self.policy["deferral_roll_days"]))
         obligation.deferrals.append(
