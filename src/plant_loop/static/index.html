@@ -131,7 +131,7 @@
     </section>
     <section>
       <h2>How it works</h2>
-      <p class="note"><strong>Board loop:</strong> cases are ordered by a priority formula in code (safety &gt; line-down &gt; quality &gt; shortage &gt; maintenance, scaled by line criticality and downtime) and worked to a shift budget; the remainder is handed over in writing. <strong>Case loop:</strong> diagnose (ranked hypotheses, evidence required) → plan (steps, parts checked against the shelf, the SOP's mandatory safety steps non-removable) → verify (a critic round plus code checks). Gaps send the case back for another round — on the gaps only. Exits are decided in code: <em>converged</em>, <em>exhausted</em>, <em>blocked_external</em> (a part only the outside world can supply), <em>safety_stop</em> (safety cases escalate at round 0, always), <em>budget_exceeded</em>. Every case stops at the <strong>supervisor gate</strong> with a draft work order or escalation note. The agent never actuates anything.</p>
+      <p class="note"><strong>Board loop:</strong> cases are ordered by a priority formula in code (safety &gt; line-down &gt; quality &gt; shortage &gt; maintenance, scaled by line criticality and downtime) and worked to a shift budget; the remainder is handed over in writing. <strong>Case loop:</strong> diagnose (ranked hypotheses, evidence required) → plan (steps, parts checked against the shelf, the SOP's mandatory safety steps non-removable) → verify (a critic round plus code checks; when the shelf cannot satisfy a part, the verify stage searches the KB's compatibility relation in code — a substitute must be in stock <em>and</em> clear the SOP's constraints for the slot — replans around the winner, and records the substitution, or the rejection, on the record). Gaps send the case back for another round — on the gaps only. Exits are decided in code: <em>converged</em>, <em>exhausted</em>, <em>blocked_external</em> (a part only the outside world can supply), <em>safety_stop</em> (safety cases escalate at round 0, always), <em>budget_exceeded</em>. Every case stops at the <strong>supervisor gate</strong> with a draft work order or escalation note. The agent never actuates anything.</p>
     </section>
   </div>
 
@@ -253,7 +253,7 @@ function renderResult(r) {
   for (const round of r.rounds) {
     html += `<div class="round-card"><div class="rhead">Round ${round.round} — top: ${esc(round.top_fault_class || "—")} · ${round.steps} plan step(s) · ${round.input_tokens}+${round.output_tokens} tokens</div>
       <div>gaps opened: <span class="gap-open">${round.gaps_opened.length ? esc(round.gaps_opened.join(", ")) : "none"}</span> ·
-      gaps closed: <span class="gap-closed">${round.gaps_closed.length ? esc(round.gaps_closed.join(", ")) : "none"}</span></div></div>`;
+      gaps closed: <span class="gap-closed">${round.gaps_closed.length ? esc(round.gaps_closed.join(", ")) : "none"}</span>${round.substitutions && round.substitutions.length ? `<br>substitute search: ${esc(round.substitutions.join("; "))}` : ""}</div></div>`;
   }
   if (top) {
     html += `<h3>Diagnosis</h3><dl class="kv"><dt>Top hypothesis</dt><dd><strong>${esc(top.fault_class)}</strong> — confidence ${Number(top.confidence).toFixed(2)} · SOP ${esc(top.sop_id || "—")}</dd></dl>`;
@@ -269,12 +269,28 @@ function renderResult(r) {
         ` · est. downtime ${r.plan.estimated_downtime_min} min</p>`;
     }
   }
+  if (r.plan && r.plan.substitutions && r.plan.substitutions.length) {
+    html += `<h3>Substitutions — the verify stage's search</h3><ul>` + r.plan.substitutions.map((s) =>
+      s.status === "applied"
+        ? `<li><span class="badge">SUBSTITUTION</span> <strong>${esc(s.original_part_id)} → ${esc(s.substitute_part_id)}</strong> — ${esc(s.reason)}${s.basis ? `<br><span class="note">basis: ${esc(s.basis)}</span>` : ""}${(s.spec_deltas || []).length ? `<br><span class="note">deltas: ${s.spec_deltas.map((d) => `${esc(d.attribute)} ${esc(d.original)} → ${esc(d.substitute)}`).join("; ")}</span>` : ""}</li>`
+        : `<li><strong>${esc(s.substitute_part_id)}</strong> considered for ${esc(s.original_part_id)} — REJECTED: ${esc(s.reason)}</li>`).join("") + `</ul>`;
+  }
   if (r.open_gaps && r.open_gaps.length) {
     html += `<h3>Open gaps</h3><ul>` + r.open_gaps.map((g) => `<li><strong>${esc(g.kind)}</strong>${g.safety ? ' <span class="badge">SAFETY</span>' : ""} — ${esc(g.detail)}</li>`).join("") + `</ul>`;
   }
   html += `<h3>Guardrails</h3><ul>` + (r.guardrails.checks || []).map((c) =>
     `<li><span class="${c.passed ? "check-pass" : "check-fail"}">${c.passed ? "PASS" : "FAIL"}</span> ${esc(c.name)} — <span class="note">${esc(c.detail)}</span></li>`).join("") + `</ul>`;
   html += `<h3>Draft (${esc(r.draft.kind || "—")})</h3><pre>${esc(r.draft.text || "")}</pre>`;
+  if (r.exit_reason === "converged" && r.status !== "rejected") {
+    html += `<h3>Work-order packet</h3>
+      <p class="note">The floor copy of this case: steps in order, the safety steps as a check-off list, parts with substitutions flagged, blank sign-off lines. Composed in code from the record.</p>
+      <div class="row" style="margin:10px 0">
+        <button id="packet-btn">Generate packet</button>
+        <button id="packet-copy" disabled>Copy text</button>
+        <span class="note" id="packet-status"></span>
+      </div>
+      <div id="packet"></div>`;
+  }
   if (r.outcome) {
     const o = r.outcome;
     html += `<h3>Recorded outcome</h3><dl class="kv">
@@ -288,6 +304,30 @@ function renderResult(r) {
   }
   html += `<p class="note">${esc(r.gate_notice)}</p>`;
   $("result").innerHTML = html;
+  const packetBtn = $("packet-btn");
+  if (packetBtn) {
+    let packetText = "";
+    packetBtn.addEventListener("click", async () => {
+      $("packet-status").textContent = "composing…";
+      try {
+        const data = await call(`/api/cases/${r.case_id}/packet`);
+        packetText = data.text;
+        $("packet").innerHTML = `<pre>${esc(data.text)}</pre>`;
+        $("packet-copy").disabled = false;
+        $("packet-status").textContent = data.authorised ? "approved at the gate — carries the approved plan" : "draft — not authorised until a supervisor approves at the gate";
+      } catch (err) {
+        $("packet-status").textContent = `error: ${err.message}`;
+      }
+    });
+    $("packet-copy").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(packetText);
+        $("packet-status").textContent = "copied — print it for the floor";
+      } catch {
+        $("packet-status").textContent = "copy failed — select the text and copy manually";
+      }
+    });
+  }
   $("gate-section").style.display = r.status === "awaiting_supervisor" ? "" : "none";
   $("outcome-section").style.display = r.outcome ? "none" : "";
   $("oc-status").textContent = "";

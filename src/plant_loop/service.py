@@ -28,6 +28,7 @@ from langgraph.types import Command
 from pydantic import ValidationError
 
 from . import handoff as handoff_module
+from . import packet as packet_module
 from . import stats as stats_module
 from .events import CollectingSink, RunEvent, format_timestamp
 from .graph import CaseRunOutcome, build_board_graph, build_case_graph
@@ -256,6 +257,21 @@ class PlantService:
         """The shift handoff payload + its plain-text rendering."""
         payload = handoff_module.build_handoff(self.store)
         payload["text"] = handoff_module.render_text(payload)
+        return payload
+
+    def case_packet(self, case_id: str) -> dict:
+        """The work-order packet for one gated case (JSON + text).
+
+        Raises KeyError for an unknown case and ValueError when the
+        case has no verified work order to packet — the transport
+        maps those to 404 / 409, following the decision/outcome
+        conventions.
+        """
+        record = self.store.get_case(case_id)
+        if record is None:
+            raise KeyError(f"unknown case: {case_id}")
+        payload = packet_module.build_packet(record)
+        payload["text"] = packet_module.render_text(payload)
         return payload
 
     def board_items(self) -> list[BoardItem]:

@@ -269,10 +269,15 @@ def build_case_graph(
         exit_reason = controller.decide_exit(run)
         update = _run_to_state(run)
         update["exit_reason"] = exit_reason
-        update["_details"] = [
+        details = [
             f"round {run.round_no}: {len(run.gaps)} gap(s) open"
             + (f" — exit: {exit_reason}" if exit_reason else " — looping on the gaps")
         ]
+        if run.rounds and run.rounds[-1].substitutions:
+            details.append(
+                "substitute search: " + "; ".join(run.rounds[-1].substitutions)
+            )
+        update["_details"] = details
         return update
 
     def route_after_prepare(state: CaseState) -> str:

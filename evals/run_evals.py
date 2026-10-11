@@ -1,17 +1,17 @@
 """Golden loop eval: known cases in, loop behaviour checked.
 
-Twenty-six synthetic cases with authored expectations — per-case
-diagnosis class, exit reason, rounds used, draft kind, open gaps —
-plus three *defect* cases (a deliberately defective planner that
-drops safety steps, names an unstocked part, and proposes a banned
-action) and three board cases (priority order, case budget, token
-budget). Two further *outcome* entries run cases end to end, record
-supervisor outcomes against them, and assert the live-accuracy
-stats and the recurring-fault watch behave as designed (the outcome
-loop measuring itself). Every case runs the full pipeline through a
-fresh service on the deterministic offline backend, so the gate is
-hermetic: ``uv run python evals/run_evals.py`` exits non-zero below
-the gate.
+Twenty-eight entries — twenty cases with authored expectations
+(per-case diagnosis class, exit reason, rounds used, draft kind,
+open gaps, verify-stage substitution records), three *defect* cases
+(a deliberately defective planner that drops safety steps, names an
+unstocked part, and proposes a banned action), three board cases
+(priority order, case budget, token budget), and two *outcome*
+entries (cases run end to end, supervisor outcomes recorded, the
+live-accuracy stats and the recurring-fault watch asserted — the
+outcome loop measuring itself). Every case runs the full pipeline
+through a fresh service on the deterministic offline backend, so
+the gate is hermetic: ``uv run python evals/run_evals.py`` exits
+non-zero below the gate.
 
 These expectations encode the intended behaviour of the loops as
 designed — a regression gate, not an accuracy claim about any model.
@@ -138,6 +138,35 @@ def check_result(case: dict, result) -> list[str]:
         subs = {r.substitute_part_id for r in result.plan.required_parts}
         if expected["plan_substitute"] not in subs:
             failures.append(f"parts: expected substitute {expected['plan_substitute']}, got {sorted(subs)}")
+    if "substitution_applied" in expected:
+        applied = {s.substitute_part_id for s in result.plan.substitutions if s.status == "applied"}
+        if expected["substitution_applied"] not in applied:
+            failures.append(
+                f"substitutions: expected an applied record for {expected['substitution_applied']}, "
+                f"got {sorted(applied)}"
+            )
+        record = next(
+            (s for s in result.plan.substitutions if s.substitute_part_id == expected["substitution_applied"]),
+            None,
+        )
+        if record is not None and not (record.basis and record.spec_deltas):
+            failures.append("substitutions: the applied record carries no basis/spec deltas")
+    if "substitution_rejected" in expected:
+        rejected = {
+            s.substitute_part_id: s
+            for s in result.plan.substitutions
+            if s.status == "rejected"
+        }
+        record = rejected.get(expected["substitution_rejected"])
+        if record is None:
+            failures.append(
+                f"substitutions: expected a rejected record for {expected['substitution_rejected']}, "
+                f"got {sorted(rejected)}"
+            )
+        elif not record.reason:
+            failures.append("substitutions: the rejected record names no reason")
+    if expected.get("substitution_flag_in_draft") and "SUBSTITUTION" not in result.draft.text:
+        failures.append("draft: expected the SUBSTITUTION flag on the work order")
     if expected.get("never_converged") and result.exit_reason == "converged":
         failures.append("defect case converged — the verify round failed to catch the defect")
     if result.status != "awaiting_supervisor":

@@ -21,6 +21,10 @@ every route delegates, none re-implements. Notable behaviour:
   /api/stats/diagnosis`` and the recurring-fault watch;
 - ``GET /api/board/handoff`` renders the current board as a shift
   handoff (JSON, or ``?format=text`` for the shift-log text);
+- ``GET /api/cases/{id}/packet`` renders one gated case as a
+  work-order packet for the floor (JSON, or ``?format=text``) —
+  converged cases only; anything else is a 409, because an
+  unverified plan must not reach the floor as a work order;
 - ``GET /api/board/items`` lists the non-case board items (the
   reliability reviews the watch raises);
 - ``/readiness`` fails (503) when PostgreSQL is configured but
@@ -370,6 +374,28 @@ def record_outcome(case_id: str, body: OutcomeRequest, request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     return record.model_dump()
+
+
+@app.get("/api/cases/{case_id}/packet")
+def case_packet(case_id: str, format: str = "json"):
+    """The work-order packet for a gated case (JSON, or ?format=text).
+
+    Only a converged case has a verified work order to packet: a
+    non-converged exit (or a draft the supervisor rejected) is a
+    409 — the escalation draft on the record is that case's
+    document, and an unchecked plan must not reach the floor
+    dressed as a work order.
+    """
+    service = get_service()
+    try:
+        payload = service.case_packet(case_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"unknown case: {case_id}") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    if format == "text":
+        return PlainTextResponse(payload["text"])
+    return payload
 
 
 @app.get("/api/stats/diagnosis")
