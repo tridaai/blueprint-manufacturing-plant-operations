@@ -5,8 +5,12 @@
     plant-loop show EXC-101               print a stored record (JSON)
     plant-loop decide EXC-101 approved   record a supervisor decision
     plant-loop pm-proposals               PM proposals the watch earned
-    plant-loop pm-obligations             standing PM obligations
+    plant-loop pm-obligations             PM obligations (standing + retired)
     plant-loop pm-decide PMP-x approved   decide a PM proposal (pm.py)
+    plant-loop pm-retire PMO-x            retire a PM obligation (pm.py)
+    plant-loop machines                   machines + lifecycle state
+    plant-loop machine-decommission CNC-2 decommission a machine (lifecycle.py)
+    plant-loop machine-dispose CNC-2 C-1  dispose one open case of it
     plant-loop metrics                    summarise the stored runs
 
 State lives wherever the service is wired to keep it (PostgreSQL with
@@ -77,6 +81,32 @@ def main(argv: list[str] | None = None) -> int:
     pm_decide.add_argument("--interval-days", type=int, default=None)
     pm_decide.add_argument("--last-performed-at", default="")
 
+    pm_retire = sub.add_parser("pm-retire", help="retire a standing PM obligation — one-way (pm.py)")
+    pm_retire.add_argument("obligation_id")
+    pm_retire.add_argument("--by", default="", help="who is retiring it (required)")
+    pm_retire.add_argument("--reason", default="", help="why (required)")
+
+    sub.add_parser("machines", help="the plant's machines and their lifecycle state (lifecycle.py)")
+
+    machine_decommission = sub.add_parser(
+        "machine-decommission", help="decommission a machine (lifecycle.py)"
+    )
+    machine_decommission.add_argument("machine_id")
+    machine_decommission.add_argument("--by", default="", help="who is decommissioning it (required)")
+    machine_decommission.add_argument("--reason", default="", help="why (required)")
+    machine_decommission.add_argument(
+        "--effective-at", default="", help="record timestamp it takes effect (default: now)"
+    )
+
+    machine_dispose = sub.add_parser(
+        "machine-dispose",
+        help="record the disposition of one open case of a decommissioned machine",
+    )
+    machine_dispose.add_argument("machine_id")
+    machine_dispose.add_argument("case_id")
+    machine_dispose.add_argument("disposition", choices=["keep", "close_moot"])
+    machine_dispose.add_argument("--by", default="", help="whose choice this is (required)")
+
     sub.add_parser("metrics", help="summarise the stored runs")
 
     args = parser.parse_args(argv)
@@ -129,10 +159,10 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "pm-obligations":
             obligations = service.pm_obligations()
             if not obligations:
-                print("No standing PM obligations.")
+                print("No PM obligations.")
             for o in obligations:
                 print(
-                    f"{o.obligation_id}  {o.machine_id} / {o.fault_class}  "
+                    f"{o.obligation_id}  {o.status.upper()}  {o.machine_id} / {o.fault_class}  "
                     f"every {o.interval_days} days  next due {o.next_due_at}"
                 )
                 print(
@@ -141,6 +171,66 @@ def main(argv: list[str] | None = None) -> int:
                     f"cycles completed {o.cycles_completed}; "
                     f"open cycle case {o.cycle_case_id or 'none'}; deferrals {len(o.deferrals)}"
                 )
+                if o.status == "retired":
+                    print(
+                        f"  retired {o.retired_at} by {o.retired_by or '-'} "
+                        f"({o.retirement_kind}) — {o.retirement_reason}"
+                        + (f" · via {o.decommission_id}" if o.decommission_id else "")
+                    )
+        elif args.command == "pm-retire":
+            obligation = service.retire_pm_obligation(
+                args.obligation_id, by=args.by, reason=args.reason
+            )
+            print(
+                f"{obligation.obligation_id}: RETIRED by {obligation.retired_by} "
+                f"— {obligation.retirement_reason}"
+            )
+        elif args.command == "machines":
+            records = {r.machine_id: r for r in service.machine_records()}
+            from .kb import machines as kb_machines
+
+            for machine_id, machine in sorted(kb_machines().items()):
+                record = records.get(machine_id)
+                state = "DECOMMISSIONED" if record else "in service"
+                print(f"{machine_id}  {machine.get('name', '')}  {machine.get('line_id', '')}  {state}")
+                if record:
+                    print(
+                        f"  {record.record_id}: {record.reason} (by "
+                        f"{record.decided_by}, effective {record.effective_at}); "
+                        f"obligations retired: {', '.join(record.retired_obligation_ids) or 'none'}; "
+                        f"open cases listed: {', '.join(record.open_case_ids) or 'none'}"
+                    )
+                    for d in record.dispositions:
+                        print(f"  disposition: {d['case_id']} → {d['disposition']} by {d['by']}")
+        elif args.command == "machine-decommission":
+            record = service.decommission_machine(
+                args.machine_id,
+                by=args.by,
+                reason=args.reason,
+                effective_at=args.effective_at,
+            )
+            print(
+                f"{record.machine_id}: DECOMMISSIONED ({record.record_id}) by "
+                f"{record.decided_by}, effective {record.effective_at} — {record.reason}"
+            )
+            print(
+                f"  obligations retired: {', '.join(record.retired_obligation_ids) or 'none'}"
+            )
+            print(
+                f"  open cases awaiting disposition: "
+                f"{', '.join(record.open_case_ids) or 'none'}"
+            )
+        elif args.command == "machine-dispose":
+            record = service.dispose_machine_case(
+                args.machine_id, args.case_id, args.disposition, by=args.by
+            )
+            print(
+                f"{args.case_id}: {args.disposition} (recorded on {record.record_id} "
+                f"by {args.by})"
+            )
+            case = service.get_record(args.case_id)
+            if case is not None:
+                print(f"  case status now: {case.status}")
         elif args.command == "pm-decide":
             proposal, obligation = service.decide_pm_proposal(
                 args.proposal_id,

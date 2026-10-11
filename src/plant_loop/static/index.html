@@ -113,6 +113,7 @@
       <div id="board-items"></div>
       <div id="allocations"></div>
       <div id="pm"></div>
+      <div id="machines"></div>
       <h3>Shift handoff</h3>
       <p class="note">The board as it stands, written for the next shift — composed in code from the records, never by a model.</p>
       <div class="row" style="margin:10px 0">
@@ -385,6 +386,7 @@ async function loadBoard() {
     loadBoardItems();
     loadAllocations();
     loadPm();
+    loadMachines();
   } catch (err) {
     $("board").innerHTML = `<span class="empty">error: ${esc(err.message)}</span>`;
   }
@@ -559,13 +561,84 @@ async function loadPm() {
         `<span class="note" id="pm-status-${esc(p.proposal_id)}"></span></div></div>`;
     }
     if (obligations.length) {
-      html += `<table><tr><th>Obligation</th><th>Machine / fault</th><th>Interval</th><th>Next due</th><th>Last performed</th><th>Cycles</th><th>Deferrals</th></tr>` +
-        obligations.map((o) => `<tr><td>${esc(o.obligation_id)}</td><td>${esc(o.machine_id)} / ${esc(o.fault_class)}</td><td>${o.interval_days} d</td><td>${esc(o.next_due_at)}${o.cycle_case_id ? `<br><span class="note">cycle case ${esc(o.cycle_case_id)} on the board</span>` : ""}</td><td>${esc(o.last_performed_at || "never")}</td><td>${o.cycles_completed}</td><td>${o.deferrals.length}</td></tr>`).join("") + `</table>`;
+      html += `<table><tr><th>Obligation</th><th>Machine / fault</th><th>Status</th><th>Interval</th><th>Next due</th><th>Last performed</th><th>Cycles</th><th>Deferrals</th><th></th></tr>` +
+        obligations.map((o) => {
+          const retired = o.status === "retired";
+          const status = retired
+            ? `RETIRED<br><span class="note">${esc(o.retired_at)} by ${esc(o.retired_by)} — ${esc(o.retirement_reason)}${o.retirement_kind === "machine_decommission" ? ` (via ${esc(o.decommission_id)})` : ""}</span>`
+            : "standing";
+          const control = retired ? "" :
+            `<span class="row"><input id="pm-retire-reason-${esc(o.obligation_id)}" type="text" placeholder="retirement reason — required, stays on the record" style="width:240px"><button data-pm-retire="${esc(o.obligation_id)}">Retire</button></span><span class="note" id="pm-retire-status-${esc(o.obligation_id)}"></span>`;
+          return `<tr><td>${esc(o.obligation_id)}</td><td>${esc(o.machine_id)} / ${esc(o.fault_class)}</td><td>${status}</td><td>${o.interval_days} d</td><td>${esc(o.next_due_at)}${o.cycle_case_id ? `<br><span class="note">cycle case ${esc(o.cycle_case_id)} on the board</span>` : ""}</td><td>${esc(o.last_performed_at || "never")}</td><td>${o.cycles_completed}</td><td>${o.deferrals.length}</td><td>${control}</td></tr>`;
+        }).join("") + `</table>`;
     }
     $("pm").innerHTML = html;
     document.querySelectorAll("[data-pm-approve]").forEach((btn) => btn.addEventListener("click", () => pmDecide(btn.dataset.pmApprove, "approved")));
     document.querySelectorAll("[data-pm-reject]").forEach((btn) => btn.addEventListener("click", () => pmDecide(btn.dataset.pmReject, "rejected")));
+    document.querySelectorAll("[data-pm-retire]").forEach((btn) => btn.addEventListener("click", () => pmRetire(btn.dataset.pmRetire)));
   } catch (err) { /* the PM panel is additive; the board still renders */ }
+}
+
+async function pmRetire(obligationId) {
+  const status = $(`pm-retire-status-${obligationId}`);
+  try {
+    const reason = $(`pm-retire-reason-${obligationId}`).value.trim();
+    await call(`/api/pm/obligations/${obligationId}/retire`, { method: "POST", body: JSON.stringify({ by: "Console supervisor", reason }) });
+    loadPm();
+  } catch (err) {
+    if (status) status.textContent = `error: ${err.message}`;
+  }
+}
+
+async function loadMachines() {
+  try {
+    const machines = await call("/api/machines");
+    if (!machines.length) { $("machines").innerHTML = ""; return; }
+    let html = `<h3>Machines</h3><p class="note">The plant model names the machines; a supervisor's decommission ends one — its standing PM obligations retire automatically, its open cases are listed for a per-case disposition, and new cases for it are refused at intake. Retirement and decommission are one-way, and the reasons stay on the record.</p>`;
+    html += `<table><tr><th>Machine</th><th>Line</th><th>State</th><th></th></tr>` + machines.map((m) => {
+      if (m.state !== "decommissioned") {
+        return `<tr><td>${esc(m.machine_id)} · ${esc(m.name)}</td><td>${esc(m.line_id)}</td><td>in service</td>` +
+          `<td><span class="row"><input id="dec-reason-${esc(m.machine_id)}" type="text" placeholder="decommission reason — required" style="width:240px"><button data-decommission="${esc(m.machine_id)}">Decommission</button></span><span class="note" id="dec-status-${esc(m.machine_id)}"></span></td></tr>`;
+      }
+      const d = m.decommission;
+      const disposed = new Set((d.dispositions || []).map((x) => x.case_id));
+      const pending = (d.open_case_ids || []).filter((cid) => !disposed.has(cid));
+      let cell = `DECOMMISSIONED<br><span class="note">${esc(d.record_id)} · effective ${esc(d.effective_at)} · by ${esc(d.decided_by)} — ${esc(d.reason)}<br>obligations retired: ${(d.retired_obligation_ids || []).map(esc).join(", ") || "none"}</span>`;
+      for (const x of d.dispositions || []) {
+        cell += `<br><span class="note">${esc(x.case_id)} → ${esc(x.disposition)} by ${esc(x.by)}</span>`;
+      }
+      for (const cid of pending) {
+        cell += `<br><span class="row"><span class="note">${esc(cid)} awaiting disposition</span><button data-dispose-keep="${esc(m.machine_id)}|${esc(cid)}">Keep</button><button data-dispose-moot="${esc(m.machine_id)}|${esc(cid)}">Close as moot</button></span>`;
+      }
+      return `<tr><td>${esc(m.machine_id)} · ${esc(m.name)}</td><td>${esc(m.line_id)}</td><td colspan="2">${cell}</td></tr>`;
+    }).join("") + `</table>`;
+    $("machines").innerHTML = html;
+    document.querySelectorAll("[data-decommission]").forEach((btn) => btn.addEventListener("click", () => machineDecommission(btn.dataset.decommission)));
+    document.querySelectorAll("[data-dispose-keep]").forEach((btn) => btn.addEventListener("click", () => machineDispose(btn.dataset.disposeKeep, "keep")));
+    document.querySelectorAll("[data-dispose-moot]").forEach((btn) => btn.addEventListener("click", () => machineDispose(btn.dataset.disposeMoot, "close_moot")));
+  } catch (err) { /* the machines panel is additive; the board still renders */ }
+}
+
+async function machineDecommission(machineId) {
+  const status = $(`dec-status-${machineId}`);
+  try {
+    const reason = $(`dec-reason-${machineId}`).value.trim();
+    await call(`/api/machines/${machineId}/decommission`, { method: "POST", body: JSON.stringify({ by: "Console supervisor", reason }) });
+    loadMachines();
+    loadPm();
+    loadBoard();
+  } catch (err) {
+    if (status) status.textContent = `error: ${err.message}`;
+  }
+}
+
+async function machineDispose(key, disposition) {
+  const [machineId, caseId] = key.split("|");
+  try {
+    await call(`/api/machines/${machineId}/dispositions`, { method: "POST", body: JSON.stringify({ case_id: caseId, disposition, by: "Console supervisor" }) });
+    loadMachines();
+    loadBoard();
+  } catch (err) { alert(err.message); }
 }
 
 async function pmDecide(proposalId, decision) {

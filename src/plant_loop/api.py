@@ -42,6 +42,19 @@ every route delegates, none re-implements. Notable behaviour:
   ``POST /api/pm/proposals/{id}/decision`` records the
   supervisor's approve (interval editable at the gate) or reject
   (reason required — it moves the evidence watermark);
+  ``POST /api/pm/obligations/{id}/retire`` records a supervisor's
+  manual retirement of an obligation (actor + reason required,
+  one-way);
+- ``GET /api/machines`` lists the plant's machines with their
+  lifecycle state (lifecycle.py); ``POST
+  /api/machines/{id}/decommission`` records a machine's end
+  (actor + reason required; its standing obligations retire
+  automatically, linked, and its open cases are listed for
+  disposition); ``POST /api/machines/{id}/dispositions`` records
+  the supervisor's keep / close-as-moot choice for one of them.
+  New cases for a decommissioned machine are refused at intake
+  (``POST /cases/analyze`` and ``POST /board/run`` answer 409,
+  state named);
 - ``/readiness`` fails (503) when PostgreSQL is configured but
   unreachable, and says honestly when the in-memory test doubles are
   in use (records lost on restart — fine for a look, not for work).
@@ -270,6 +283,25 @@ class PmDecisionRequest(BaseModel):
     last_performed_at: str = ""
 
 
+class PmRetireRequest(BaseModel):
+    by: str = ""  # required (pm.py): whose act ends the obligation
+    reason: str = ""  # required (pm.py): why the plant stops owing it
+
+
+class MachineDecommissionRequest(BaseModel):
+    by: str = ""  # required (lifecycle.py): whose act ends the machine
+    reason: str = ""  # required (lifecycle.py): why it is being retired
+    # The stated moment the decommission takes effect, as a record
+    # timestamp; omit for the moment of the act itself.
+    effective_at: str = ""
+
+
+class MachineDispositionRequest(BaseModel):
+    case_id: str
+    disposition: str  # keep | close_moot
+    by: str = ""  # required (lifecycle.py): whose choice this is
+
+
 class BoardRunRequest(BaseModel):
     cases: list[dict] | None = None  # omit for the bundled sample board
     max_cases: int | None = None
@@ -290,7 +322,12 @@ def samples():
 
 @app.post("/cases/analyze", status_code=201)
 def analyze(case: ExceptionCase, request: Request):
-    run = get_service().run_case(case)
+    try:
+        run = get_service().run_case(case)
+    except ValueError as exc:
+        # The intake guard (lifecycle.py): a decommissioned
+        # machine's new cases are refused, with the state named.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return run.result.model_dump()
 
 
@@ -550,6 +587,104 @@ def pm_decision(proposal_id: str, req: PmDecisionRequest):
         "proposal": proposal.model_dump(),
         "obligation": obligation.model_dump() if obligation else None,
     }
+
+
+@app.post("/api/pm/obligations/{obligation_id}/retire")
+def pm_retire(obligation_id: str, req: PmRetireRequest):
+    """Retire a standing PM obligation (pm.py).
+
+    A supervisor's act: actor and reason required, retirement
+    one-way, and the reason stays on the record — the obligation
+    surfaces no further due cases. A machine's decommission
+    retires its obligations through the machine endpoint below,
+    never through here, so the two endings stay distinguishable.
+    """
+    try:
+        obligation = get_service().retire_pm_obligation(
+            obligation_id, by=req.by, reason=req.reason
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return obligation.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# machine lifecycle (lifecycle.py)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/machines")
+def machines():
+    """The plant's machines with their lifecycle state.
+
+    The plant model names the machines; the machine records say
+    which of them have been decommissioned, and carry the open
+    cases awaiting a disposition.
+    """
+    service = get_service()
+    records = {r.machine_id: r for r in service.machine_records()}
+    out = []
+    for machine_id, machine in sorted(kb.machines().items()):
+        record = records.get(machine_id)
+        out.append(
+            {
+                "machine_id": machine_id,
+                "name": machine.get("name", ""),
+                "line_id": machine.get("line_id", ""),
+                "state": "decommissioned" if record else "in_service",
+                "decommission": record.model_dump() if record else None,
+                "open_cases": (
+                    [r.case_id for r in service.machine_open_cases(machine_id)]
+                    if record
+                    else []
+                ),
+            }
+        )
+    return out
+
+
+@app.post("/api/machines/{machine_id}/decommission")
+def machine_decommission(machine_id: str, req: MachineDecommissionRequest):
+    """Decommission a machine (lifecycle.py).
+
+    A supervisor's act: actor and reason required. The machine's
+    standing PM obligations retire automatically — linked to this
+    record, reason "machine decommissioned" — and its open cases
+    are listed on the record for disposition. The act itself
+    closes, drops, and decides nothing about any case.
+    """
+    try:
+        record = get_service().decommission_machine(
+            machine_id, by=req.by, reason=req.reason, effective_at=req.effective_at
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return record.model_dump()
+
+
+@app.post("/api/machines/{machine_id}/dispositions")
+def machine_disposition(machine_id: str, req: MachineDispositionRequest):
+    """Record the supervisor's disposition of one open case of a
+    decommissioned machine (lifecycle.py): keep it on the board,
+    or close it as moot. Recorded once per case."""
+    if req.disposition not in ("keep", "close_moot"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"disposition must be keep or close_moot, got {req.disposition!r}",
+        )
+    try:
+        record = get_service().dispose_machine_case(
+            machine_id, req.case_id, req.disposition, by=req.by
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return record.model_dump()
 
 
 @app.get("/api/fault-classes")

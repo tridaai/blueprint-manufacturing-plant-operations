@@ -226,7 +226,10 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
     # Preventive maintenance (pm.py): the standing obligations and
     # what is owed on them, composed from the PM records. Overdue
     # is judged against the handoff's own moment — the same clock
-    # the text render and the API caller see.
+    # the text render and the API caller see. Retired obligations
+    # ride separately, with their reasons: a handoff that quietly
+    # dropped them would read as if the duty had never existed,
+    # and the next shift deserves to know why it stopped.
     stamp = format_timestamp(moment)
     pm_records = store.all_pm_records()
     pm_obligations = [r for r in pm_records if isinstance(r, PmObligation)]
@@ -245,6 +248,21 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
                 "deferrals": len(o.deferrals),
             }
             for o in pm_obligations
+            if o.status == "standing"
+        ],
+        "retired": [
+            {
+                "obligation_id": o.obligation_id,
+                "machine_id": o.machine_id,
+                "fault_class": o.fault_class,
+                "retired_at": o.retired_at,
+                "retired_by": o.retired_by,
+                "retirement_reason": o.retirement_reason,
+                "retirement_kind": o.retirement_kind,
+                "decommission_id": o.decommission_id,
+            }
+            for o in pm_obligations
+            if o.status == "retired"
         ],
         "proposals_pending": [
             {
@@ -452,9 +470,14 @@ def render_text(handoff: dict) -> str:
                 f"  {carry['claims_standing_on_carried']} claim(s) stand on "
                 "the carried cases until a successor run accepts the board."
             )
-    pm = handoff.get("pm") or {"obligations": [], "proposals_pending": [], "deferrals": []}
+    pm = handoff.get("pm") or {
+        "obligations": [],
+        "proposals_pending": [],
+        "deferrals": [],
+        "retired": [],
+    }
     lines += ["", "PREVENTIVE MAINTENANCE:"]
-    if not pm["obligations"] and not pm["proposals_pending"]:
+    if not pm["obligations"] and not pm["proposals_pending"] and not pm.get("retired"):
         lines.append("  (no standing obligations; no proposals awaiting a decision)")
     for entry in pm["obligations"]:
         lines.append(
@@ -475,6 +498,17 @@ def render_text(handoff: dict) -> str:
             f"{entry['machine_id']} · {entry['fault_class']} · "
             f"{entry['fault_count']} faults · proposed interval "
             f"{entry['proposed_interval_days']} days"
+        )
+    for entry in pm.get("retired", []):
+        lines.append(
+            f"  - retired: {entry['obligation_id']} · {entry['machine_id']} · "
+            f"{entry['fault_class']} · retired {entry['retired_at']} by "
+            f"{entry['retired_by'] or '-'} — {entry['retirement_reason']}"
+            + (
+                f" · via decommission {entry['decommission_id']}"
+                if entry["retirement_kind"] == "machine_decommission"
+                else ""
+            )
         )
     for entry in pm["deferrals"]:
         lines.append(
