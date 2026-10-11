@@ -1,6 +1,6 @@
 {
- "total": 41,
- "passed": 41,
+ "total": 42,
+ "passed": 42,
  "rate": 1.0,
  "gate": 0.95,
  "gate_passed": true,
@@ -249,6 +249,12 @@
   {
    "id": "PM3",
    "kind": "pm",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "RG1",
+   "kind": "gate",
    "passed": true,
    "failures": []
   }

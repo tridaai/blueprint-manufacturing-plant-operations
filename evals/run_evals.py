@@ -1,6 +1,6 @@
 """Golden loop eval: known cases in, loop behaviour checked.
 
-Forty-one entries — twenty cases with authored expectations
+Forty-two entries — twenty cases with authored expectations
 (per-case diagnosis class, exit reason, rounds used, draft kind,
 open gaps, verify-stage substitution records), three *defect* cases
 (a deliberately defective planner that drops safety steps, names an
@@ -39,8 +39,13 @@ an edited interval creates the obligation, a later board surfaces
 its cycle case, and the supervisor's outcome closes the cycle
 with the next due point computed — while a rejected proposal's
 evidence is spent (the watermark) until a fresh threshold of
-faults re-earns a draft, and two faults draft nothing at all).
-Every case
+faults re-earns a draft, and two faults draft nothing at all),
+and one *gate* entry (the reasoner regression gate exercised end
+to end: the offline baseline and the shipped stub candidate drive
+the fixed suite — this pack's own case entries — and the
+comparison must PASS with exactly the stub's two deliberate
+differences showing, one diagnosis difference and one extra round,
+and no safety-pin violation on either record). Every case
 runs the full pipeline through a fresh service on the
 deterministic offline backend, so the gate is hermetic:
 ``uv run python evals/run_evals.py`` exits non-zero below the gate.
@@ -707,6 +712,52 @@ def run_pm_entry(entry: dict) -> list[str]:
     return failures
 
 
+def run_gate_entry(entry: dict) -> list[str]:
+    """The reasoner regression gate, exercised end to end.
+
+    The offline baseline and the shipped stub candidate
+    (``plant_loop/stubs.py``) both drive the gate's fixed suite —
+    this pack's own case entries — and the comparison must come
+    back PASS with exactly the stub's two deliberate differences
+    showing: one diagnosis difference (G14) and one extra round
+    (G20). Neither record may carry a safety-pin violation. The
+    FAIL paths of the comparison are pinned in the unit tests,
+    where pin-breaking candidates can be constructed without
+    shipping one.
+    """
+    from plant_loop import regression
+    from plant_loop.stubs import StubCandidateReasoner
+
+    expected = entry["expected"]
+    failures: list[str] = []
+    baseline = regression.run_suite(OfflineReasoner(), label="offline-baseline")
+    candidate = regression.run_suite(StubCandidateReasoner(), label="stub-candidate")
+    report = regression.compare_runs(baseline, candidate)
+    if report["verdict"] != expected["verdict"]:
+        failures.append(f"verdict: expected {expected['verdict']}, got {report['verdict']}")
+    differences = sorted(d["case_id"] for d in report["diagnosis"]["differences"])
+    if differences != sorted(expected["diagnosis_differences"]):
+        failures.append(
+            f"diagnosis differences: expected {expected['diagnosis_differences']}, got {differences}"
+        )
+    extra_rounds = sorted(d["case_id"] for d in report["deltas"]["per_case"] if d["rounds_candidate"] > d["rounds_baseline"])
+    if extra_rounds != sorted(expected["extra_round_cases"]):
+        failures.append(
+            f"extra-round cases: expected {expected['extra_round_cases']}, got {extra_rounds}"
+        )
+    if len(report["baseline_pin_violations"]) != expected["baseline_pin_violations"]:
+        failures.append(
+            f"baseline pin violations: expected {expected['baseline_pin_violations']}, "
+            f"got {report['baseline_pin_violations']}"
+        )
+    if len(report["safety_pin_violations"]) != expected["candidate_pin_violations"]:
+        failures.append(
+            f"candidate pin violations: expected {expected['candidate_pin_violations']}, "
+            f"got {report['safety_pin_violations']}"
+        )
+    return failures
+
+
 def main() -> int:
     entries = load_cases()
     results = []
@@ -726,6 +777,8 @@ def main() -> int:
             failures = run_carryover_entry(entry)
         elif entry["kind"] == "pm":
             failures = run_pm_entry(entry)
+        elif entry["kind"] == "gate":
+            failures = run_gate_entry(entry)
         else:
             failures = run_case_entry(entry)
         ok = not failures
