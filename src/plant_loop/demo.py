@@ -52,16 +52,43 @@ def print_board(service: PlantService, cases, result) -> None:
     for case_id in result.processed:
         record = records[case_id]
         top = record.diagnosis.top()
-        print(
+        line = (
             f"  {case_id}  priority {record.priority:7.1f}  exit {record.exit_reason:<16} "
             f"rounds {len(record.rounds)}  "
             f"{(top.fault_class if top else '—')}"
         )
+        # Exposure rides beside the order, never inside it — and a
+        # safety stop carries none at all (economics.py).
+        econ = record.economics
+        if econ is not None and econ.estimated_usd is not None:
+            line += f"  · exposure ${econ.estimated_usd:,.2f} ({econ.estimated_minutes} min at ${econ.rate_usd_per_hour:,.0f}/hr)"
+        elif econ is not None and econ.estimated_minutes:
+            line += f"  · exposure {econ.estimated_minutes} min (line carries no rate — minutes only)"
+        print(line)
         if record.injection_flags:
             for flag in record.injection_flags:
                 print(f"      injection flagged: {flag}")
     for leftover in result.remaining:
         print(f"  {leftover['case_id']}  NOT WORKED — {leftover['reason']}")
+    if result.economics is not None:
+        econ = result.economics
+        print()
+        if econ.estimated_exposure_usd is not None:
+            print(
+                f"[ECONOMICS] this board is carrying ~${econ.estimated_exposure_usd:,.2f} of "
+                f"estimated downtime exposure over {econ.estimated_minutes} min"
+                + (
+                    f" ({econ.unrated_minutes} min of it on lines the plant model does not rate)"
+                    if econ.unrated_minutes
+                    else ""
+                )
+                + f" · largest: {econ.largest_exposure_case_id} at ${econ.largest_exposure_usd:,.2f}"
+            )
+        else:
+            print(
+                f"[ECONOMICS] this board carries {econ.estimated_minutes} estimated "
+                "downtime min, all on lines the plant model does not rate — minutes only"
+            )
     print()
     print("[HANDOFF]")
     for line in result.handoff_summary.splitlines():

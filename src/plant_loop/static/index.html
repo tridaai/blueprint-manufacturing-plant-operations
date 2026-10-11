@@ -241,6 +241,7 @@ function renderResult(r) {
     <dt>Case</dt><dd>${esc(r.case_id)} — ${esc(r.title)}</dd>
     <dt>Type / machine</dt><dd>${esc(r.type)} · ${esc(r.machine_id || "—")} (${esc(r.line_id || "—")})</dd>
     <dt>Priority</dt><dd>${r.priority} <span class="note">${esc(r.priority_reason)}</span></dd>
+    ${r.economics ? `<dt>Downtime economics</dt><dd>${economicsLine(r.economics)}</dd>` : ""}
     <dt>Status</dt><dd>${esc(r.status)}${r.decision ? ` — ${esc(r.decision)} by ${esc(r.decision_by || "supervisor")}` : ""}</dd>
     <dt>Loop telemetry</dt><dd>${esc(r.telemetry.backend)} (${esc(r.telemetry.model)}) · ${r.rounds.length} round(s) · ${r.telemetry.input_tokens}+${r.telemetry.output_tokens} tokens · est. $${r.telemetry.estimated_cost_usd ?? "—"}</dd>
   </dl>`;
@@ -347,12 +348,34 @@ $("analyze").addEventListener("click", async () => {
   }
 });
 
+function usd(v) {
+  return "$" + Number(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function economicsLine(e) {
+  if (e.rate_usd_per_hour === null || e.rate_usd_per_hour === undefined) {
+    return `est. ${e.estimated_minutes} min — ${esc(e.line_id)} carries no downtime rate in the plant model, so this case is minutes only` +
+      (e.actual_minutes !== null && e.actual_minutes !== undefined ? ` · actual ${e.actual_minutes} min` : "");
+  }
+  let text = `est. ${usd(e.estimated_usd)} (${e.estimated_minutes} min at ${usd(e.rate_usd_per_hour)}/hr — ${esc(e.rate_basis)})`;
+  if (e.actual_minutes !== null && e.actual_minutes !== undefined) {
+    text += ` · actual ${usd(e.actual_usd)} (${e.actual_minutes} min)`;
+  }
+  return text;
+}
+
+function exposureCell(r) {
+  if (r.exposure_usd !== null && r.exposure_usd !== undefined) return "$" + Number(r.exposure_usd).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (r.estimated_minutes) return r.estimated_minutes + " min (no rate)";
+  return "—";
+}
+
 async function loadBoard() {
   try {
     const rows = await call("/board");
     if (!rows.length) { $("board").innerHTML = `<span class="empty">Nothing waiting — run a case or the board.</span>`; return; }
-    $("board").innerHTML = `<table><tr><th>Case</th><th>Type</th><th>Machine</th><th>Priority</th><th>Exit</th><th>Rounds</th></tr>` +
-      rows.map((r) => `<tr class="clickable" data-case="${esc(r.case_id)}"><td>${esc(r.case_id)}</td><td>${esc(r.type)}</td><td>${esc(r.machine_id || "—")}</td><td>${r.priority}</td><td>${esc(r.exit_reason)}</td><td>${r.rounds}</td></tr>`).join("") + `</table>`;
+    $("board").innerHTML = `<table><tr><th>Case</th><th>Type</th><th>Machine</th><th>Priority</th><th>Exit</th><th>Rounds</th><th>Exposure</th></tr>` +
+      rows.map((r) => `<tr class="clickable" data-case="${esc(r.case_id)}"><td>${esc(r.case_id)}</td><td>${esc(r.type)}</td><td>${esc(r.machine_id || "—")}</td><td>${r.priority}</td><td>${esc(r.exit_reason)}</td><td>${r.rounds}</td><td>${exposureCell(r)}</td></tr>`).join("") + `</table>`;
     document.querySelectorAll("#board tr.clickable").forEach((tr) => {
       tr.addEventListener("click", async () => {
         try { renderResult(await call(`/cases/${tr.dataset.case}`)); } catch (err) { alert(err.message); }
@@ -395,6 +418,16 @@ $("run-board").addEventListener("click", async () => {
       run.processed.map((cid, i) => `<tr><td>${i + 1}</td><td>${esc(cid)}</td><td>${esc(run.exits[cid] || "")}</td></tr>`).join("") + `</table>`;
     if (run.allocations && run.allocations.length) {
       html += `<h4>Allocation ledger — this run</h4>` + allocationsTable(run.allocations);
+    }
+    if (run.economics) {
+      const e = run.economics;
+      const dollars = e.estimated_exposure_usd !== null && e.estimated_exposure_usd !== undefined
+        ? `~$${Number(e.estimated_exposure_usd).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} of estimated downtime exposure`
+        : "no dollar exposure (no case on a rated line)";
+      html += `<p class="note">This board is carrying ${dollars} over ${e.estimated_minutes} estimated min` +
+        (e.unrated_minutes ? ` — ${e.unrated_minutes} of those minutes on lines the plant model does not rate (minutes only)` : "") +
+        (e.largest_exposure_case_id ? ` · largest single exposure: ${esc(e.largest_exposure_case_id)} at $${Number(e.largest_exposure_usd).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "") +
+        `. Exposure informs the supervisor; it never changes the priority order.</p>`;
     }
     if (run.remaining.length) {
       html += `<p class="flag">Not worked: ` + run.remaining.map((x) => `${esc(x.case_id)} (${esc(x.reason)})`).join(", ") + `</p>`;
@@ -480,7 +513,12 @@ async function loadLiveStats() {
       <dt>Rounds to converge</dt><dd>${s.mean_rounds_to_converge ?? "—"} mean over ${s.converged_confirmed} confirmed convergence(s)</dd>
       <dt>Plans used</dt><dd>${pct(s.plan_acceptance.used_rate)} (accepted ${s.plan_acceptance.counts.accepted} · with changes ${s.plan_acceptance.counts.accepted_with_changes} · rejected ${s.plan_acceptance.counts.rejected})</dd>
       <dt>Downtime error</dt><dd>${s.downtime.n ? `mean ${s.downtime.mean_error_min} min · mean abs ${s.downtime.mean_absolute_error_min} min (n=${s.downtime.n})` : "no actuals recorded yet"}</dd>
+      ${s.economics && s.economics.rated_n ? `<dt>Downtime cost accuracy</dt><dd>estimated ${usd(s.economics.estimated_usd)} vs actual ${usd(s.economics.actual_usd)} · mean error ${usd(s.economics.mean_error_usd)} (n=${s.economics.rated_n} rated case(s)${s.economics.minutes_only_n ? ` · ${s.economics.minutes_only_n} minutes-only case(s) on unrated lines count in the minutes, never the dollars` : ""})</dd>` : (s.economics && s.economics.n ? `<dt>Downtime cost accuracy</dt><dd>no rated lines among the recorded actuals — minutes only</dd>` : "")}
     </dl>`;
+    if (s.economics && s.economics.by_line && s.economics.by_line.length) {
+      html += `<table><tr><th>Line</th><th>Rate</th><th>Cases</th><th>Est. min</th><th>Actual min</th><th>Mean err (min)</th><th>Est. $</th><th>Actual $</th><th>Mean err ($)</th></tr>` +
+        s.economics.by_line.map((r) => `<tr><td>${esc(r.line_id)}</td><td>${r.rate_usd_per_hour !== null && r.rate_usd_per_hour !== undefined ? usd(r.rate_usd_per_hour) + "/hr" : "no rate"}</td><td>${r.n}</td><td>${r.estimated_minutes}</td><td>${r.actual_minutes}</td><td>${r.mean_error_min}</td><td>${r.estimated_usd !== null && r.estimated_usd !== undefined ? usd(r.estimated_usd) : "—"}</td><td>${r.actual_usd !== null && r.actual_usd !== undefined ? usd(r.actual_usd) : "—"}</td><td>${r.mean_error_usd !== null && r.mean_error_usd !== undefined ? usd(r.mean_error_usd) : "—"}</td></tr>`).join("") + `</table>`;
+    }
     if (s.learning_loop) {
       const ll = s.learning_loop;
       const byMachine = Object.entries(ll.written_back_by_machine || {}).map(([m, n]) => `${esc(m)} ×${n}`).join(" · ");
