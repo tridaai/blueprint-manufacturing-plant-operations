@@ -16,6 +16,12 @@ current records, for the supervisor handing the plant over:
   machines' history — the memory the next shift's diagnoses start
   from, named so the incoming supervisor knows what the plant has
   newly learned;
+- preventive maintenance (pm.py): the standing PM obligations the
+  incoming shift inherits — interval, next due point, whether it is
+  already overdue, the open cycle case — the proposals still
+  awaiting a supervisor's decision, and every deferral on record,
+  so an inspection that keeps being put off is visible in the log,
+  not just true;
 - the board priced in downtime dollars (economics.py): the
   estimated exposure still open at the gate, the largest single
   open exposure, and the closed cases' recorded actuals — minutes
@@ -46,6 +52,8 @@ from .schemas import (
     EXIT_EXHAUSTED,
     EXIT_SAFETY_STOP,
     CaseResult,
+    PmObligation,
+    PmProposal,
 )
 
 _ESCALATION_EXITS = (EXIT_EXHAUSTED, EXIT_BUDGET_EXCEEDED)
@@ -215,6 +223,52 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
                 "settled": latest_any.get("carry_over_settled") or {},
             }
 
+    # Preventive maintenance (pm.py): the standing obligations and
+    # what is owed on them, composed from the PM records. Overdue
+    # is judged against the handoff's own moment — the same clock
+    # the text render and the API caller see.
+    stamp = format_timestamp(moment)
+    pm_records = store.all_pm_records()
+    pm_obligations = [r for r in pm_records if isinstance(r, PmObligation)]
+    pm = {
+        "obligations": [
+            {
+                "obligation_id": o.obligation_id,
+                "machine_id": o.machine_id,
+                "fault_class": o.fault_class,
+                "interval_days": o.interval_days,
+                "next_due_at": o.next_due_at,
+                "overdue": bool(o.next_due_at) and o.next_due_at <= stamp,
+                "last_performed_at": o.last_performed_at,
+                "cycle_case_id": o.cycle_case_id,
+                "cycles_completed": o.cycles_completed,
+                "deferrals": len(o.deferrals),
+            }
+            for o in pm_obligations
+        ],
+        "proposals_pending": [
+            {
+                "proposal_id": r.proposal_id,
+                "machine_id": r.machine_id,
+                "fault_class": r.fault_class,
+                "fault_count": r.fault_count,
+                "proposed_interval_days": r.proposed_interval_days,
+            }
+            for r in pm_records
+            if isinstance(r, PmProposal) and r.status == "proposed"
+        ],
+        "deferrals": [
+            {
+                "obligation_id": o.obligation_id,
+                "machine_id": o.machine_id,
+                "fault_class": o.fault_class,
+                **d,
+            }
+            for o in pm_obligations
+            for d in o.deferrals
+        ],
+    }
+
     last_run = None
     if runs:
         latest = max(runs, key=lambda run: (run.get("created_at", ""), run.get("run_id", "")))
@@ -256,6 +310,7 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
         "confirmed_faults": confirmed_faults,
         "economics": economics,
         "carry_over": carry_over,
+        "pm": pm,
         "last_board_run": last_run,
     }
 
@@ -397,6 +452,37 @@ def render_text(handoff: dict) -> str:
                 f"  {carry['claims_standing_on_carried']} claim(s) stand on "
                 "the carried cases until a successor run accepts the board."
             )
+    pm = handoff.get("pm") or {"obligations": [], "proposals_pending": [], "deferrals": []}
+    lines += ["", "PREVENTIVE MAINTENANCE:"]
+    if not pm["obligations"] and not pm["proposals_pending"]:
+        lines.append("  (no standing obligations; no proposals awaiting a decision)")
+    for entry in pm["obligations"]:
+        lines.append(
+            f"  - {entry['obligation_id']} · {entry['machine_id']} · "
+            f"{entry['fault_class']} · every {entry['interval_days']} days · "
+            f"next due {entry['next_due_at']}"
+            + (" — OVERDUE" if entry["overdue"] else "")
+        )
+        lines.append(
+            f"      last performed {entry['last_performed_at'] or 'never'} · "
+            f"cycles completed {entry['cycles_completed']} · "
+            f"open cycle case {entry['cycle_case_id'] or 'none'} · "
+            f"deferrals {entry['deferrals']}"
+        )
+    for entry in pm["proposals_pending"]:
+        lines.append(
+            f"  - proposal {entry['proposal_id']} awaiting a decision · "
+            f"{entry['machine_id']} · {entry['fault_class']} · "
+            f"{entry['fault_count']} faults · proposed interval "
+            f"{entry['proposed_interval_days']} days"
+        )
+    for entry in pm["deferrals"]:
+        lines.append(
+            f"  - deferred: {entry['obligation_id']} · {entry['machine_id']} · "
+            f"cycle case {entry['case_id']} · {entry['at']} by "
+            f"{entry['by'] or '-'} — {entry['reason']} · due rolled "
+            f"{entry['previous_due_at']} -> {entry['rolled_to']}"
+        )
     run = handoff["last_board_run"]
     lines += ["", "LAST BOARD RUN:"]
     if run is None:

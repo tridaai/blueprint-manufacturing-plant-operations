@@ -35,6 +35,13 @@ every route delegates, none re-implements. Notable behaviour:
   unverified plan must not reach the floor as a work order;
 - ``GET /api/board/items`` lists the non-case board items (the
   reliability reviews the watch raises);
+- ``GET /api/pm/proposals`` / ``GET /api/pm/obligations`` list the
+  preventive-maintenance layer (pm.py): proposals the watch's
+  pattern earned — evidence and interval arithmetic on the record —
+  and the standing obligations approvals created;
+  ``POST /api/pm/proposals/{id}/decision`` records the
+  supervisor's approve (interval editable at the gate) or reject
+  (reason required — it moves the evidence watermark);
 - ``/readiness`` fails (503) when PostgreSQL is configured but
   unreachable, and says honestly when the in-memory test doubles are
   in use (records lost on restart — fine for a look, not for work).
@@ -248,6 +255,19 @@ class DecisionRequest(BaseModel):
     decision: str  # approved | rejected
     by: str = ""
     reason: str = ""
+
+
+class PmDecisionRequest(BaseModel):
+    decision: str  # approved | rejected
+    by: str = ""
+    reason: str = ""  # required for a rejection (pm.py)
+    # The interval the supervisor approves (editable at the gate);
+    # omit to stand on the proposal's own interval.
+    interval_days: int | None = None
+    # The last performed inspection, as a record timestamp, when
+    # the supervisor declares it at approval — the obligation's
+    # clock runs from it (pm.py).
+    last_performed_at: str = ""
 
 
 class BoardRunRequest(BaseModel):
@@ -475,6 +495,61 @@ def allocations():
     an approval leaves them standing.
     """
     return get_service().allocations()
+
+
+@app.get("/api/pm/proposals")
+def pm_proposals():
+    """Preventive-maintenance proposals (pm.py).
+
+    Drafted in code when the recurring-fault watch's pattern earns
+    one: the cited evidence and the interval arithmetic ride on
+    the record, so what the supervisor is asked to decide on is
+    fully visible here.
+    """
+    return [p.model_dump() for p in get_service().pm_proposals()]
+
+
+@app.get("/api/pm/obligations")
+def pm_obligations():
+    """Standing PM obligations (pm.py): the approved interval, the
+    clock it runs on, the next due point, the open cycle case if
+    one is on a board, and the deferral history."""
+    return [o.model_dump() for o in get_service().pm_obligations()]
+
+
+@app.post("/api/pm/proposals/{proposal_id}/decision")
+def pm_decision(proposal_id: str, req: PmDecisionRequest):
+    """Record the supervisor's decision on a PM proposal.
+
+    Approval creates the standing obligation at the approved
+    interval (the request's, else the proposal's); rejection
+    requires a reason and spends the cited evidence (the
+    watermark — pm.py).
+    """
+    if req.decision not in ("approved", "rejected"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"decision must be approved or rejected, got {req.decision!r}",
+        )
+    if req.interval_days is not None and req.interval_days < 1:
+        raise HTTPException(status_code=422, detail="interval_days must be at least 1")
+    try:
+        proposal, obligation = get_service().decide_pm_proposal(
+            proposal_id,
+            req.decision,
+            by=req.by,
+            reason=req.reason,
+            interval_days=req.interval_days,
+            last_performed_at=req.last_performed_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "proposal": proposal.model_dump(),
+        "obligation": obligation.model_dump() if obligation else None,
+    }
 
 
 @app.get("/api/fault-classes")

@@ -4,6 +4,9 @@
     plant-loop board [--max-cases N]      work the bundled sample board
     plant-loop show EXC-101               print a stored record (JSON)
     plant-loop decide EXC-101 approved   record a supervisor decision
+    plant-loop pm-proposals               PM proposals the watch earned
+    plant-loop pm-obligations             standing PM obligations
+    plant-loop pm-decide PMP-x approved   decide a PM proposal (pm.py)
     plant-loop metrics                    summarise the stored runs
 
 State lives wherever the service is wired to keep it (PostgreSQL with
@@ -62,6 +65,18 @@ def main(argv: list[str] | None = None) -> int:
     decide.add_argument("--by", default="")
     decide.add_argument("--reason", default="")
 
+    sub.add_parser("pm-proposals", help="PM proposals the watch's pattern earned (pm.py)")
+
+    sub.add_parser("pm-obligations", help="standing PM obligations (pm.py)")
+
+    pm_decide = sub.add_parser("pm-decide", help="record the supervisor's decision on a PM proposal")
+    pm_decide.add_argument("proposal_id")
+    pm_decide.add_argument("decision", choices=["approved", "rejected"])
+    pm_decide.add_argument("--by", default="")
+    pm_decide.add_argument("--reason", default="")
+    pm_decide.add_argument("--interval-days", type=int, default=None)
+    pm_decide.add_argument("--last-performed-at", default="")
+
     sub.add_parser("metrics", help="summarise the stored runs")
 
     args = parser.parse_args(argv)
@@ -99,6 +114,49 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "decide":
             record = service.record_decision(args.case_id, args.decision, by=args.by, reason=args.reason)
             print(f"{record.case_id}: {record.decision} by {record.decision_by or 'supervisor'} → {record.status}")
+        elif args.command == "pm-proposals":
+            proposals = service.pm_proposals()
+            if not proposals:
+                print("No PM proposals.")
+            for p in proposals:
+                print(f"{p.proposal_id}  {p.status.upper()}  {p.machine_id} / {p.fault_class}")
+                print(f"  {p.rationale}")
+                if p.status != "proposed":
+                    print(
+                        f"  decided by {p.decided_by or '-'} at {p.decided_at}"
+                        + (f" — {p.decision_reason}" if p.decision_reason else "")
+                    )
+        elif args.command == "pm-obligations":
+            obligations = service.pm_obligations()
+            if not obligations:
+                print("No standing PM obligations.")
+            for o in obligations:
+                print(
+                    f"{o.obligation_id}  {o.machine_id} / {o.fault_class}  "
+                    f"every {o.interval_days} days  next due {o.next_due_at}"
+                )
+                print(
+                    f"  approved {o.approved_at} by {o.approved_by or '-'} (proposal "
+                    f"{o.proposal_id}); last performed {o.last_performed_at or 'never'}; "
+                    f"cycles completed {o.cycles_completed}; "
+                    f"open cycle case {o.cycle_case_id or 'none'}; deferrals {len(o.deferrals)}"
+                )
+        elif args.command == "pm-decide":
+            proposal, obligation = service.decide_pm_proposal(
+                args.proposal_id,
+                args.decision,
+                by=args.by,
+                reason=args.reason,
+                interval_days=args.interval_days,
+                last_performed_at=args.last_performed_at,
+            )
+            print(f"{proposal.proposal_id}: {proposal.status} by {proposal.decided_by or 'supervisor'}")
+            if obligation is not None:
+                print(
+                    f"obligation {obligation.obligation_id}: every "
+                    f"{obligation.interval_days} days, next due {obligation.next_due_at} "
+                    f"(clock from {obligation.clock_basis})"
+                )
         elif args.command == "metrics":
             print(json.dumps(service.metrics(), indent=1))
     except (KeyError, ValueError) as exc:

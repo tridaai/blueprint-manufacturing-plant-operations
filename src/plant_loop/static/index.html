@@ -112,6 +112,7 @@
       <div id="board" class="empty">Loading…</div>
       <div id="board-items"></div>
       <div id="allocations"></div>
+      <div id="pm"></div>
       <h3>Shift handoff</h3>
       <p class="note">The board as it stands, written for the next shift — composed in code from the records, never by a model.</p>
       <div class="row" style="margin:10px 0">
@@ -383,6 +384,7 @@ async function loadBoard() {
     });
     loadBoardItems();
     loadAllocations();
+    loadPm();
   } catch (err) {
     $("board").innerHTML = `<span class="empty">error: ${esc(err.message)}</span>`;
   }
@@ -534,6 +536,55 @@ async function loadLiveStats() {
     $("livestats").innerHTML = html;
   } catch (err) {
     $("livestats").textContent = `error: ${err.message}`;
+  }
+}
+
+async function loadPm() {
+  try {
+    const [proposals, obligations] = await Promise.all([
+      call("/api/pm/proposals"), call("/api/pm/obligations"),
+    ]);
+    const pending = proposals.filter((p) => p.status === "proposed");
+    if (!pending.length && !obligations.length) { $("pm").innerHTML = ""; return; }
+    let html = `<h3>Preventive maintenance</h3><p class="note">Proposals the recurring-fault watch drafted from the cases it counts — evidence and interval arithmetic on the record. Approving creates a standing obligation at the interval you approve; boards then carry its inspection case when it falls due. Only a supervisor's outcome on that case ever marks a PM performed.</p>`;
+    for (const p of pending) {
+      html += `<div class="banner warn">${esc(p.machine_id)} · ${esc(p.fault_class)} — proposal ${esc(p.proposal_id)}<br><span class="note">${esc(p.rationale)}</span>` +
+        `<div class="row" style="margin:8px 0">` +
+        `<label>interval (days) <input id="pm-interval-${esc(p.proposal_id)}" type="number" min="1" value="${p.proposed_interval_days}" style="width:70px"></label>` +
+        `<label>last performed <input id="pm-last-${esc(p.proposal_id)}" type="text" placeholder="2026-09-01T00:00:00Z" style="width:175px"></label>` +
+        `<button class="primary" data-pm-approve="${esc(p.proposal_id)}">Approve</button></div>` +
+        `<div class="row" style="margin:8px 0">` +
+        `<label>rejection reason <input id="pm-reason-${esc(p.proposal_id)}" type="text" placeholder="required — it spends the cited evidence" style="width:320px"></label>` +
+        `<button data-pm-reject="${esc(p.proposal_id)}">Reject</button>` +
+        `<span class="note" id="pm-status-${esc(p.proposal_id)}"></span></div></div>`;
+    }
+    if (obligations.length) {
+      html += `<table><tr><th>Obligation</th><th>Machine / fault</th><th>Interval</th><th>Next due</th><th>Last performed</th><th>Cycles</th><th>Deferrals</th></tr>` +
+        obligations.map((o) => `<tr><td>${esc(o.obligation_id)}</td><td>${esc(o.machine_id)} / ${esc(o.fault_class)}</td><td>${o.interval_days} d</td><td>${esc(o.next_due_at)}${o.cycle_case_id ? `<br><span class="note">cycle case ${esc(o.cycle_case_id)} on the board</span>` : ""}</td><td>${esc(o.last_performed_at || "never")}</td><td>${o.cycles_completed}</td><td>${o.deferrals.length}</td></tr>`).join("") + `</table>`;
+    }
+    $("pm").innerHTML = html;
+    document.querySelectorAll("[data-pm-approve]").forEach((btn) => btn.addEventListener("click", () => pmDecide(btn.dataset.pmApprove, "approved")));
+    document.querySelectorAll("[data-pm-reject]").forEach((btn) => btn.addEventListener("click", () => pmDecide(btn.dataset.pmReject, "rejected")));
+  } catch (err) { /* the PM panel is additive; the board still renders */ }
+}
+
+async function pmDecide(proposalId, decision) {
+  const status = $(`pm-status-${proposalId}`);
+  try {
+    const body = { decision, by: "Console supervisor" };
+    if (decision === "approved") {
+      const interval = parseInt($(`pm-interval-${proposalId}`).value, 10);
+      if (interval) body.interval_days = interval;
+      const last = $(`pm-last-${proposalId}`).value.trim();
+      if (last) body.last_performed_at = last;
+    } else {
+      body.reason = $(`pm-reason-${proposalId}`).value.trim();
+    }
+    await call(`/api/pm/proposals/${proposalId}/decision`, { method: "POST", body: JSON.stringify(body) });
+    loadPm();
+    loadBoard();
+  } catch (err) {
+    if (status) status.textContent = `error: ${err.message}`;
   }
 }
 
