@@ -43,6 +43,7 @@ from pydantic import ValidationError
 
 from . import carryover as carryover_module
 from . import economics as economics_module
+from . import gaps as gaps_module
 from . import handoff as handoff_module
 from . import history as history_module
 from . import lifecycle as lifecycle_module
@@ -63,6 +64,7 @@ from .schemas import (
     BoardRunResult,
     CaseResult,
     ExceptionCase,
+    KnowledgeGapReport,
     MachineRecord,
     PartsOutlook,
     PmObligation,
@@ -561,6 +563,15 @@ class PlantService:
                 else outlook_module.DEFAULT_HORIZON_DAYS
             ),
         )
+
+    def knowledge_gaps(self, *, now: datetime | None = None) -> KnowledgeGapReport:
+        """The knowledge-gap report (gaps.py): case blocks grouped
+        by the missing SOP — the diagnosed fault with no SOP on
+        record for its machine — with the rounds the absence has
+        burned and whether it is biting right now. A pure
+        projection that drafts nothing: advising the KB maintainer
+        is its whole job; authoring the SOP stays a human's act."""
+        return gaps_module.build_gap_report(self.store, now=now)
 
     def board_items(self) -> list[BoardItem]:
         return self.store.all_board_items()

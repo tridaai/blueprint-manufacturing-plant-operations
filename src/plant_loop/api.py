@@ -42,6 +42,13 @@ every route delegates, none re-implements. Notable behaviour:
   and the moment each shortfall bites. ``?horizon_days=`` widens
   or narrows the window (the authored default is 14). A pure
   read — it creates nothing and orders nothing;
+- ``GET /api/knowledge/gaps`` aggregates the case blocks the
+  plant's own knowledge caused (gaps.py): records whose diagnosed
+  fault has no SOP on record for their machine, grouped by the
+  missing SOP, with the rounds the absence burned and whether a
+  case is blocked on it right now. A pure read that drafts
+  nothing — it advises the KB maintainer; authoring an SOP stays
+  a human's act;
 - ``GET /api/pm/proposals`` / ``GET /api/pm/obligations`` list the
   preventive-maintenance layer (pm.py): proposals the watch's
   pattern earned — evidence and interval arithmetic on the record —
@@ -553,6 +560,16 @@ def parts_outlook(horizon_days: int = outlook_module.DEFAULT_HORIZON_DAYS):
             status_code=422, detail="horizon_days must be at least 1"
         )
     return get_service().parts_outlook(horizon_days=horizon_days).model_dump()
+
+
+@app.get("/api/knowledge/gaps")
+def knowledge_gaps():
+    """The knowledge-gap report (gaps.py): the blocks the plant's
+    own missing knowledge caused, grouped by the missing SOP —
+    the asset, the cases it blocked, the rounds it burned, and
+    whether it is biting right now. Advisory only: the report
+    carries no SOP content and drafts nothing."""
+    return get_service().knowledge_gaps().model_dump()
 
 
 @app.get("/api/pm/proposals")

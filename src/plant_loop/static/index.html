@@ -115,6 +115,7 @@
       <div id="pm"></div>
       <div id="machines"></div>
       <div id="outlook"></div>
+      <div id="gaps"></div>
       <h3>Shift handoff</h3>
       <p class="note">The board as it stands, written for the next shift — composed in code from the records, never by a model.</p>
       <div class="row" style="margin:10px 0">
@@ -389,6 +390,7 @@ async function loadBoard() {
     loadPm();
     loadMachines();
     loadOutlook();
+    loadGaps();
   } catch (err) {
     $("board").innerHTML = `<span class="empty">error: ${esc(err.message)}</span>`;
   }
@@ -604,6 +606,20 @@ async function loadOutlook() {
     }
     $("outlook").innerHTML = html;
   } catch (err) { /* the outlook panel is additive; the board still renders */ }
+}
+
+async function loadGaps() {
+  try {
+    const report = await call("/api/knowledge/gaps");
+    if (!report.gaps.length) { $("gaps").innerHTML = ""; return; }
+    let html = `<h3>Knowledge gaps — what the plant doesn't know</h3><p class="note">Case blocks grouped by the missing SOP, computed in code from the records: a case counts when its diagnosed fault has no SOP on record for its machine and it ended without a verified plan. Advisory only — the report drafts no SOP and unblocks nothing; authoring the procedure stays a plant expert's act.</p>`;
+    html += report.gaps.map((g) =>
+      `<div class="banner ${g.open_now ? "bad" : "warn"}">${esc(g.machine_id)} · ${esc(g.fault_class)} — no SOP on record${g.machine_on_register ? "" : " · machine not on the register"} · ${g.blocked_cases} case(s) blocked · ${g.rounds_burned} round(s) burned · ${g.open_now ? "blocked now: " + g.open_case_ids.map(esc).join(", ") : "not blocking now — history"}<br>` +
+      `<span class="note">cases: ${g.case_ids.map(esc).join(", ")} · first ${esc(g.first_case_id)} · latest ${esc(g.latest_case_id)}</span>` +
+      (g.standing_obligation_ids.length ? `<br><span class="note">standing PM obligation(s) on the same hole: ${g.standing_obligation_ids.map(esc).join(", ")}</span>` : "") + `</div>`
+    ).join("");
+    $("gaps").innerHTML = html;
+  } catch (err) { /* the gaps panel is additive; the board still renders */ }
 }
 
 async function pmRetire(obligationId) {

@@ -29,6 +29,13 @@ current records, for the supervisor handing the plant over:
   and the moment it bites, so the next shift sees a shortage
   while it is still a date on a calendar rather than a blocked
   case at the workbench;
+- the knowledge gaps (gaps.py): the blocks the plant's own
+  missing knowledge caused — case records whose diagnosed fault
+  has no SOP on record for their machine — grouped by the
+  missing SOP, with the rounds the absence burned and whether a
+  case is blocked on it right now, so the incoming supervisor
+  (and the KB maintainer behind them) sees the pattern, not just
+  the latest escalation;
 - the board priced in downtime dollars (economics.py): the
   estimated exposure still open at the gate, the largest single
   open exposure, and the closed cases' recorded actuals — minutes
@@ -51,6 +58,7 @@ import re
 from datetime import datetime, timezone
 
 from . import economics as economics_module
+from . import gaps as gaps_module
 from . import outlook as outlook_module
 from .events import format_timestamp
 from .ports import Store
@@ -301,6 +309,13 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
     # for the incoming shift.
     parts_outlook = outlook_module.build_outlook(store, now=moment).model_dump()
 
+    # The knowledge gaps (gaps.py): the same aggregation the API
+    # and CLI serve, computed at the handoff's own moment — the
+    # missing SOPs and what their absence has cost, so the pattern
+    # hands over with the board. A read over the same records:
+    # it drafts nothing and unblocks nothing.
+    knowledge_gaps = gaps_module.build_gap_report(store, now=moment).model_dump()
+
     last_run = None
     if runs:
         latest = max(runs, key=lambda run: (run.get("created_at", ""), run.get("run_id", "")))
@@ -344,6 +359,7 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
         "carry_over": carry_over,
         "pm": pm,
         "parts_outlook": parts_outlook,
+        "knowledge_gaps": knowledge_gaps,
         "last_board_run": last_run,
     }
 
@@ -546,6 +562,34 @@ def render_text(handoff: dict) -> str:
         lines.append(
             "  (none — projected demand inside the horizon is covered "
             "by the shelf)"
+        )
+    gaps = (handoff.get("knowledge_gaps") or {}).get("gaps") or []
+    lines += ["", "KNOWLEDGE GAPS — WHAT THE PLANT DOESN'T KNOW:"]
+    if gaps:
+        for gap in gaps:
+            lines.append(
+                f"  - {gap['machine_id']} · {gap['fault_class']} — no SOP on "
+                f"record · {gap['blocked_cases']} case(s) blocked · "
+                f"{gap['rounds_burned']} round(s) burned · "
+                + (
+                    f"blocked now: {', '.join(gap['open_case_ids'])}"
+                    if gap["open_now"]
+                    else "not blocking now — history"
+                )
+            )
+            if gap.get("standing_obligation_ids"):
+                lines.append(
+                    "      standing PM obligation(s) on the same hole: "
+                    + ", ".join(gap["standing_obligation_ids"])
+                )
+        lines.append(
+            "  (the report advises the knowledge base's maintainer — "
+            "it drafts no SOP; authoring one is a human's act)"
+        )
+    else:
+        lines.append(
+            "  (none — every non-converged case's diagnosed fault has "
+            "an SOP on record)"
         )
     run = handoff["last_board_run"]
     lines += ["", "LAST BOARD RUN:"]

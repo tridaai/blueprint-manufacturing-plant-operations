@@ -600,6 +600,62 @@ class PartsOutlook(BaseModel):
     unquantified_pm: list[dict] = Field(default_factory=list)
 
 
+class KnowledgeGap(BaseModel):
+    """One missing piece of plant knowledge, and what it has cost.
+
+    A row exists because case records ended without a verified
+    plan while their diagnosed fault had no SOP on record for
+    their machine (gaps.py — the same ``sop_for`` test the loop
+    and the parts outlook apply). The fields are the asset, the
+    evidence and the cost, and nothing else: identifiers, counts,
+    timestamps. There is deliberately no field that could carry
+    SOP content — no steps, no text, no draft — because this
+    report advises the knowledge base's maintainer; it must never
+    become a machine-authored procedure wearing a report's
+    clothes. ``fault_class`` may be ``unknown_fault``: the
+    diagnosis itself had nothing to name, which is the same hole
+    seen from the other side.
+    """
+
+    machine_id: str
+    fault_class: str  # the diagnosed fault with no SOP (or unknown_fault)
+    machine_on_register: bool = False  # False: the KB has no such machine
+    blocked_cases: int = 0
+    case_ids: list[str] = Field(default_factory=list)  # chronological
+    first_case_id: str = ""
+    latest_case_id: str = ""
+    first_seen_at: str = ""  # the earliest contributing record's stamp
+    latest_seen_at: str = ""
+    rounds_burned: int = 0  # total loop rounds the gap's cases spent
+    exits: dict[str, int] = Field(default_factory=dict)  # exit -> count
+    open_now: bool = False  # a contributing case still waits at the gate
+    open_case_ids: list[str] = Field(default_factory=list)
+    # Standing PM obligations standing on the same hole — the
+    # outlook's unquantified test (no SOP on record) applied to
+    # the same machine + fault, without the outlook's horizon:
+    # the maintainer who authors this SOP unblocks both.
+    standing_obligation_ids: list[str] = Field(default_factory=list)
+
+
+class KnowledgeGapReport(BaseModel):
+    """What the plant doesn't know: the knowledge-gap report.
+
+    A pure read model over the store plus the plant model
+    (gaps.py): it creates no cases, drafts no SOPs, and unblocks
+    nothing. A gap stops biting when new cases stop blocking on
+    it — visible here as the row's case list no longer growing,
+    and gone entirely when every contributing record has been
+    superseded by a re-run that converged (records are upserts;
+    finished runs are never rewritten).
+    """
+
+    as_of: str = ""
+    basis: str = ""
+    cases_examined: int = 0
+    blocked_cases: int = 0  # summed over the rows
+    gaps: list[KnowledgeGap] = Field(default_factory=list)
+
+
 class TraceStep(BaseModel):
     name: str
     title: str

@@ -127,6 +127,33 @@ def print_outlook(service: PlantService) -> None:
             )
 
 
+def print_gaps(service: PlantService) -> None:
+    report = service.knowledge_gaps()
+    print()
+    print("[GAPS] knowledge gaps — blocks grouped by the missing SOP:")
+    if report.gaps:
+        for gap in report.gaps:
+            print(
+                f"  {gap.machine_id} · {gap.fault_class} — no SOP on record · "
+                f"{gap.blocked_cases} case(s) blocked · {gap.rounds_burned} "
+                f"round(s) burned · "
+                + (
+                    f"blocked now: {', '.join(gap.open_case_ids)}"
+                    if gap.open_now
+                    else "not blocking now — history"
+                )
+            )
+    else:
+        print(
+            "  none on this board — every non-converged case's diagnosed "
+            "fault has an SOP on record"
+        )
+    print(
+        "  (the report advises the knowledge base's maintainer; it drafts "
+        "no SOP and unblocks nothing)"
+    )
+
+
 def print_spotlight(service: PlantService) -> None:
     record = service.get_record(SPOTLIGHT)
     if record is None:
@@ -174,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     result = service.run_board(cases, sink=PrintingSink())
     print_board(service, cases, result)
     print_outlook(service)
+    print_gaps(service)
     print_spotlight(service)
     if args.decision:
         record = service.record_decision(SPOTLIGHT, args.decision, by="demo supervisor")
