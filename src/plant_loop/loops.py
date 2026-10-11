@@ -48,7 +48,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from . import guardrails, kb, substitution
+from . import guardrails, history, kb, substitution
 from .config import env_int
 from .events import NullSink, RunEvent
 from .ports import CaseContext, EventSink, Reasoner, Retriever
@@ -187,18 +187,42 @@ class CaseLoopController:
         retriever: Retriever,
         policy: LoopPolicy | None = None,
         sink: EventSink | None = None,
+        history_provider: Callable[[str], list[dict]] | None = None,
     ) -> None:
         self.reasoner = reasoner
         self.retriever = retriever
         self.policy = policy or LoopPolicy()
         self.sink = sink or NullSink()
+        # Where the machine's merged history comes from (the service
+        # binds it to the record store, so supervisor-confirmed
+        # write-backs are in it). Unbound, the controller reads the
+        # KB's recorded history alone — never an empty memory.
+        self.history_provider = history_provider
 
     # -- context ------------------------------------------------------------
+
+    def machine_history(self, machine_id: str) -> list[dict]:
+        """The merged history view for one machine (history.py)."""
+        if self.history_provider is not None:
+            return self.history_provider(machine_id)
+        return history.merged_history(None, machine_id)
 
     def prepare(self, case: ExceptionCase, case_text: str) -> CaseRun:
         query = f"{case.machine_id} {case.type} {case.title} {case.description}"
         chunks = self.retriever.retrieve(query, limit=5)
-        ctx = CaseContext(case=case, case_text=case_text, kb_context=chunks)
+        # The machine's own history is diagnose context by right, not
+        # by retrieval luck: the merged view (confirmed write-backs +
+        # recorded history, sources marked) rides on the context for
+        # the offline signals, and any of its chunks the retriever
+        # did not already surface are appended for the model
+        # backends' prompts — marked, never silently blended.
+        entries = self.machine_history(case.machine_id)
+        seen = {chunk["chunk_id"] for chunk in chunks}
+        for chunk in history.history_chunks(entries):
+            if chunk["chunk_id"] not in seen:
+                chunks.append(chunk)
+                seen.add(chunk["chunk_id"])
+        ctx = CaseContext(case=case, case_text=case_text, kb_context=chunks, history=entries)
         return CaseRun(case=case, ctx=ctx)
 
     # -- round steps (also the graph's nodes) -------------------------------

@@ -195,6 +195,11 @@ def kb_chunks() -> list[dict]:
             {
                 "chunk_id": f"history:{entry['hist_id']}",
                 "source": "history",
+                # The KB's own history is *recorded* history; the
+                # supervisor-confirmed write-backs (history.py) carry
+                # the other marking, so a retrieved chunk and an
+                # appended one read the same way.
+                "history_source": "recorded",
                 "machine_id": entry["machine_id"],
                 "fault_class": entry["fault_class"],
                 "text": (

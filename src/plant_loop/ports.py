@@ -37,7 +37,7 @@ if TYPE_CHECKING:  # annotation-only imports (no runtime cycles)
     from .events import RunEvent
     from .store import CaseRecord
 
-from .schemas import ActionPlan, BoardItem, Critique, Diagnosis, ExceptionCase, Gap
+from .schemas import ActionPlan, BoardItem, Critique, Diagnosis, ExceptionCase, Gap, HistoryEntry
 
 
 @dataclass
@@ -54,6 +54,15 @@ class CaseContext:
     case: ExceptionCase
     case_text: str
     kb_context: list[dict] = field(default_factory=list)
+    # The case machine's history as the diagnoser should read it:
+    # the KB's seeded entries (``source: "recorded"``) merged with
+    # the supervisor-confirmed write-backs for the machine
+    # (``source: "supervisor_confirmed"``, confirmed first) — one
+    # merged view, assembled in history.py and carried here so every
+    # backend reads the same memory. Entries are plain dicts in the
+    # KB history shape (hist_id / machine_id / fault_class / date /
+    # summary / resolution) plus ``source`` and ``case_id``.
+    history: list[dict] = field(default_factory=list)
     session: dict = field(default_factory=dict)
 
 
@@ -133,6 +142,10 @@ class Store(Protocol):
     def get_board_item(self, item_id: str) -> "BoardItem | None": ...
 
     def all_board_items(self) -> list["BoardItem"]: ...
+
+    def save_history_entry(self, entry: "HistoryEntry") -> None: ...
+
+    def all_history_entries(self) -> list["HistoryEntry"]: ...
 
     def save_error(self, entry: dict) -> None: ...
 

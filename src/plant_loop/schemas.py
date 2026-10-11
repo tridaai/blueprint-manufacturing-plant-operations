@@ -249,6 +249,38 @@ class BoardItem(BaseModel):
     created_at: str = ""
 
 
+class HistoryEntry(BaseModel):
+    """One supervisor-confirmed fault, written back to the plant's memory.
+
+    The KB's seeded history is authored ground truth and never
+    changes. This is the other kind of history: when a supervisor's
+    outcome confirms the fault the floor actually found, the
+    confirmation is appended to the machine's history as an entry of
+    its own — same shape as a seeded entry (machine, fault class,
+    date, what was seen, what was done) plus the provenance a seeded
+    entry does not need: which case confirmed it, and the
+    ``source`` marking (``supervisor_confirmed``) that keeps it
+    distinguishable from the KB's recorded history forever.
+
+    One entry per confirming case: the entry id derives from the
+    case id, and outcomes are recorded once per case, so a
+    confirmation can never be written twice. Only a confirmed fault
+    writes one — an outcome that confirms nothing writes nothing,
+    and a safety stop never writes one at all (history.py refuses
+    it in code: a safety case has no diagnosis to confirm).
+    """
+
+    entry_id: str  # hist-<case_id>
+    machine_id: str = ""
+    fault_class: str = ""
+    case_id: str = ""  # the case whose outcome confirmed the fault
+    source: str = "supervisor_confirmed"
+    date: str = ""  # the case's date (its reported_at, date part)
+    recorded_at: str = ""  # when the outcome was recorded
+    summary: str = ""
+    resolution: str = ""
+
+
 class TraceStep(BaseModel):
     name: str
     title: str

@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 
 from .config import env_str, load_dotenv
-from .schemas import BoardItem, CaseResult
+from .schemas import BoardItem, CaseResult, HistoryEntry
 
 # The record type the store carries (the name ports.py refers to).
 CaseRecord = CaseResult
@@ -55,6 +55,12 @@ class StoreBase:
         raise NotImplementedError
 
     def all_board_items(self) -> list[BoardItem]:
+        return []
+
+    def save_history_entry(self, entry: HistoryEntry) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+    def all_history_entries(self) -> list[HistoryEntry]:
         return []
 
     def save_error(self, entry: dict) -> None:
@@ -124,6 +130,7 @@ class InMemoryStore(StoreBase):
         self._cases: dict[str, CaseResult] = {}
         self._board_runs: dict[str, dict] = {}
         self._board_items: dict[str, BoardItem] = {}
+        self._history_entries: dict[str, HistoryEntry] = {}
         self._errors: list[dict] = []
 
     def save_case(self, record: CaseResult) -> None:
@@ -152,6 +159,15 @@ class InMemoryStore(StoreBase):
 
     def all_board_items(self) -> list[BoardItem]:
         return list(self._board_items.values())
+
+    def save_history_entry(self, entry: HistoryEntry) -> None:
+        # Upsert by entry id: a confirmation is one per case, and
+        # re-saving the same case's entry is the same fact, not a
+        # second memory.
+        self._history_entries[entry.entry_id] = entry
+
+    def all_history_entries(self) -> list[HistoryEntry]:
+        return list(self._history_entries.values())
 
     def save_error(self, entry: dict) -> None:
         self._errors.append(entry)
@@ -266,6 +282,24 @@ class PostgresStore(StoreBase):
             with conn.cursor() as cur:
                 cur.execute("SELECT payload FROM board_items ORDER BY created_at, item_id")
                 return [BoardItem.model_validate(row[0]) for row in cur.fetchall()]
+
+    def save_history_entry(self, entry: HistoryEntry) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO history_entries (entry_id, machine_id, fault_class, payload) "
+                    "VALUES (%s, %s, %s, %s::jsonb) "
+                    "ON CONFLICT (entry_id) DO UPDATE SET machine_id = EXCLUDED.machine_id, "
+                    "fault_class = EXCLUDED.fault_class, payload = EXCLUDED.payload",
+                    (entry.entry_id, entry.machine_id, entry.fault_class, entry.model_dump_json()),
+                )
+            conn.commit()
+
+    def all_history_entries(self) -> list[HistoryEntry]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT payload FROM history_entries ORDER BY created_at, entry_id")
+                return [HistoryEntry.model_validate(row[0]) for row in cur.fetchall()]
 
     def save_error(self, entry: dict) -> None:
         with self._connect() as conn:

@@ -38,6 +38,7 @@ import time
 from pydantic import ValidationError
 
 from . import kb
+from . import history as history_module
 from .config import env_float, env_str, load_dotenv
 from .errors import ProviderError, not_configured_error, translate_provider_error
 from .ports import CaseContext, RoundOutput
@@ -520,11 +521,61 @@ def _case_text_lower(ctx: CaseContext) -> str:
     return f"{case.title}\n{case.description}\n{case.notes}".lower()
 
 
-def _history_evidence(machine_id: str, fault_class: str) -> list[str]:
-    return [
-        f"maintenance history {h['hist_id']} ({h['date']}): {h['summary']}"
-        for h in kb.history_for(machine_id, fault_class)[:1]
-    ]
+def _machine_history(ctx: CaseContext) -> list[dict]:
+    """The merged history the diagnoser reads for this case's
+    machine (history.py): the context carries it; a context built by
+    hand carries none, and falls back to the KB's recorded history
+    for the machine — never to a silently empty memory."""
+    return ctx.history or history_module.merged_history(None, ctx.case.machine_id)
+
+
+def _history_evidence(ctx: CaseContext, fault_class: str) -> list[str]:
+    """The machine's precedent for one fault class, cited as evidence.
+
+    One entry — the first match in the merged view, which puts
+    supervisor-confirmed entries ahead of recorded ones, so the
+    citation is the strongest precedent the plant has. A confirmed
+    entry is cited as what it is (the floor's own finding, with its
+    case); a recorded KB entry as maintenance history, as before.
+    """
+    for entry in _machine_history(ctx):
+        if entry.get("fault_class") != fault_class:
+            continue
+        if entry.get("source") == history_module.SOURCE_CONFIRMED:
+            return [
+                f"supervisor-confirmed history (case {entry.get('case_id', '')}, "
+                f"{entry.get('date', '')}): {entry.get('summary', '')}"
+            ]
+        return [
+            f"maintenance history {entry.get('hist_id', '')} "
+            f"({entry.get('date', '')}): {entry.get('summary', '')}"
+        ]
+    return []
+
+
+def _confirmed_precedent(ctx: CaseContext, fault_class: str) -> str | None:
+    """Separation evidence from a supervisor-confirmed precedent.
+
+    When the loop is sent back on a competing hypothesis and the
+    readings cannot separate the pair, a fault the floor has
+    already *confirmed* on this machine is the plant's own
+    discriminating fact: the signature has been separated before,
+    by the people who stripped the machine. Recorded history never
+    separates — a note is not a confirmation. Returns the evidence
+    line for the rival hypothesis, or None.
+    """
+    for entry in _machine_history(ctx):
+        if entry.get("fault_class") != fault_class:
+            continue
+        if entry.get("source") != history_module.SOURCE_CONFIRMED:
+            continue
+        return (
+            f"supervisor-confirmed precedent: {fault_class} was confirmed on "
+            f"{ctx.case.machine_id} in case {entry.get('case_id', '')} "
+            f"({entry.get('date', '')}) — the floor's own finding separates "
+            "this machine's signature from the rival hypothesis"
+        )
+    return None
 
 
 # Each signal returns (confidence, evidence) or None when the fault
@@ -542,7 +593,7 @@ def _sig_bearing(ctx: CaseContext):
     if temp is not None and temp >= 80:
         confidence = 0.78
         evidence.append(f"spindle temperature {temp} C is above 80 C (SOP-CNC3-BRG diagnostic check)")
-    evidence += _history_evidence(ctx.case.machine_id, "spindle_bearing_wear")
+    evidence += _history_evidence(ctx, "spindle_bearing_wear")
     return confidence, evidence
 
 
@@ -568,14 +619,14 @@ def _sig_coolant(ctx: CaseContext):
         hits.append(f"coolant pressure {pressure} bar is below the 1.2 bar SOP threshold")
     if not hits:
         return None
-    return 0.8, hits + _history_evidence(ctx.case.machine_id, "coolant_system_fault")
+    return 0.8, hits + _history_evidence(ctx, "coolant_system_fault")
 
 
 def _sig_cartridge(ctx: CaseContext):
     if _reading(ctx.case, "spindle_rotates") == "no" or "seized" in _case_text_lower(ctx):
         return 0.85, [
             "spindle will not rotate with the drive isolated — SOP-CNC2-CART: cartridge failure, no in-house repair"
-        ] + _history_evidence(ctx.case.machine_id, "spindle_cartridge_failure")
+        ] + _history_evidence(ctx, "spindle_cartridge_failure")
     return None
 
 
@@ -584,7 +635,7 @@ def _sig_hydraulic(ctx: CaseContext):
     if drop is not None and drop >= 10:
         return 0.8, [
             f"ram pressure falls {drop}% under steady load — SOP-PRESS1-HYD: seal bypass"
-        ] + _history_evidence(ctx.case.machine_id, "hydraulic_pressure_loss")
+        ] + _history_evidence(ctx, "hydraulic_pressure_loss")
     text = _case_text_lower(ctx)
     if "pressure" in text and ("oil" in text or "leak" in text):
         return 0.6, ["case text reports pressure loss with oil at the ram gland (SOP-PRESS1-HYD)"]
@@ -599,7 +650,7 @@ def _sig_weld_drift(ctx: CaseContext):
     gas = _num(ctx.case, "gas_flow_l_min")
     if gas is not None and gas < 12:
         evidence.append(f"shielding-gas flow {gas} L/min at the torch is below the 12 L/min specification")
-    return 0.82, evidence + _history_evidence(ctx.case.machine_id, "weld_quality_drift")
+    return 0.82, evidence + _history_evidence(ctx, "weld_quality_drift")
 
 
 def _sig_wire_feed(ctx: CaseContext):
@@ -640,7 +691,7 @@ def _sig_fan(ctx: CaseContext):
     evidence = [f"discharge temperature {temp} C is above the 105 C limit in SOP-COMP7-FAN"]
     if _reading(ctx.case, "cooling_fan_running") == "no":
         evidence.append("cooling fan reported not running")
-    return 0.85, evidence + _history_evidence(ctx.case.machine_id, "cooling_fan_failure")
+    return 0.85, evidence + _history_evidence(ctx, "cooling_fan_failure")
 
 
 def _sig_air(ctx: CaseContext):
@@ -659,7 +710,7 @@ def _sig_seal(ctx: CaseContext):
             evidence.append(f"indicated seal temperature swings {swing} C across the shift (SOP-PACK6-SEAL: >15 C means a failing element)")
         if failures is not None:
             evidence.append(f"seal failure rate {failures}% of packs")
-        return 0.8, evidence + _history_evidence(ctx.case.machine_id, "seal_temperature_drift")
+        return 0.8, evidence + _history_evidence(ctx, "seal_temperature_drift")
     return None
 
 
@@ -727,7 +778,11 @@ class OfflineReasoner:
     one loop behaviour it models faithfully is *focus*: sent back
     with a competing-hypothesis gap, it applies the SOP's
     discriminating check to the readings — and when the readings
-    cannot separate the two fault classes, it says so and the gap
+    cannot separate the two fault classes, it tries the plant's
+    confirmed memory: a supervisor-confirmed precedent for the
+    leading fault on this machine separates the pair (a recorded
+    history note never does — it is cited as evidence, nothing
+    more). When neither separates them, it says so and the gap
     survives. That honesty is what makes EXHAUSTED exits reachable
     offline.
     """
@@ -783,6 +838,7 @@ class OfflineReasoner:
 
         focused = {g.ref: g for g in focus if g.kind == "competing_hypothesis"}
         hypotheses: list[Hypothesis] = []
+        separated: set[str] = set()  # rivals a readings check already settled
         for sop in kb.sops_for_machine(case.machine_id):
             fault = sop["fault_class"]
             signal = _SIGNALS.get(fault)
@@ -797,6 +853,7 @@ class OfflineReasoner:
                 if discriminated is not None:
                     confidence, extra = discriminated
                     evidence = evidence + extra
+                    separated.add(fault)
             hypotheses.append(
                 Hypothesis(
                     fault_class=fault,
@@ -806,6 +863,27 @@ class OfflineReasoner:
                     sop_id=sop["sop_id"],
                 )
             )
+        # The plant's memory as the last discriminating check: a
+        # focused rival the readings could not separate is separated
+        # when the floor has already confirmed the leading fault on
+        # this machine (history.py — supervisor-confirmed entries
+        # only; recorded history cites as evidence but never
+        # separates). The rival is re-scored to the ruled-out level,
+        # exactly as a readings discriminator re-scores it, with the
+        # precedent named in its evidence.
+        if focused and len(hypotheses) >= 2:
+            leader = max(hypotheses, key=lambda h: h.confidence)
+            for hyp in hypotheses:
+                if (
+                    hyp.fault_class in focused
+                    and hyp.fault_class not in separated
+                    and hyp is not leader
+                    and hyp.confidence > 0.2
+                ):
+                    precedent = _confirmed_precedent(ctx, leader.fault_class)
+                    if precedent is not None:
+                        hyp.confidence = 0.12
+                        hyp.evidence = hyp.evidence + [precedent]
         hypotheses.sort(key=lambda h: h.confidence, reverse=True)
         hypotheses = hypotheses[:3]
         if not hypotheses:

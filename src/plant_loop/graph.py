@@ -87,6 +87,7 @@ class CaseState(TypedDict, total=False):
     case_text: str
     injection_flags: list[str]
     kb_chunks: list[dict]
+    history: list[dict]
     session: dict
     diagnosis: dict
     plan: dict
@@ -143,6 +144,7 @@ def _run_from_state(controller: CaseLoopController, state: CaseState) -> CaseRun
         case=case,
         case_text=state.get("case_text", ""),
         kb_context=state.get("kb_chunks", []),
+        history=state.get("history", []),
         session=state.get("session", {}),
     )
     run = CaseRun(case=case, ctx=ctx)
@@ -173,6 +175,7 @@ def _run_to_state(run: CaseRun) -> dict:
         "exit_reason": run.exit_reason,
         "session": run.ctx.session,
         "kb_chunks": run.ctx.kb_context,
+        "history": run.ctx.history,
     }
 
 
@@ -235,7 +238,12 @@ def build_case_graph(
                 "safety observation — SAFETY_STOP at round 0 by rule: no diagnosis, no plan, no model call"
             ]
         else:
-            update["_details"] = [f"{len(run.ctx.kb_context)} KB chunk(s) retrieved for the diagnose round"]
+            confirmed = sum(1 for e in run.ctx.history if e.get("source") == "supervisor_confirmed")
+            update["_details"] = [
+                f"{len(run.ctx.kb_context)} KB chunk(s) in context for the diagnose round; "
+                f"machine history: {len(run.ctx.history)} entr(ies)"
+                + (f", {confirmed} supervisor-confirmed" if confirmed else "")
+            ]
         return update
 
     def diagnose(state: CaseState) -> dict:

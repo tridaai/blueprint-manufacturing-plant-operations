@@ -28,6 +28,7 @@ from langgraph.types import Command
 from pydantic import ValidationError
 
 from . import handoff as handoff_module
+from . import history as history_module
 from . import packet as packet_module
 from . import stats as stats_module
 from .events import CollectingSink, RunEvent, format_timestamp
@@ -97,6 +98,12 @@ class PlantService:
             retriever=self.retriever,
             policy=self.loop_policy,
             sink=sink,
+            # The diagnoser reads the store's merged history view:
+            # recorded KB history + the supervisor-confirmed
+            # write-backs this store has collected (history.py).
+            history_provider=lambda machine_id: history_module.merged_history(
+                self.store, machine_id
+            ),
         )
 
     def _case_graph(self, sink: EventSink):
@@ -170,6 +177,15 @@ class PlantService:
         corrected fact belongs in a corrected record, visibly).
         Recording one re-runs the watch: a confirmed fault can be
         the case that completes a pattern.
+
+        A confirmed fault also closes the learning loop: it is
+        written back to the machine's history (history.py), where
+        the next diagnosis of that machine reads it. The write-back
+        entry is built *before* anything is saved — it is the step
+        that refuses a confirmed fault on a safety stop (a safety
+        case has no diagnosis to confirm), so a refused outcome
+        leaves no trace anywhere, rather than a record that says
+        one thing and a memory that says another.
         """
         record = self.store.get_case(case_id)
         if record is None:
@@ -177,8 +193,11 @@ class PlantService:
         if record.outcome is not None:
             raise ValueError(f"case {case_id} already has a recorded outcome")
         outcome.recorded_at = format_timestamp(datetime.now(timezone.utc))
+        entry = history_module.entry_for_record(record, outcome)  # may refuse (safety stop)
         record.outcome = outcome
         self.store.save_case(record)
+        if entry is not None:
+            self.store.save_history_entry(entry)
         self.reliability_watch.check(record)
         return record
 
@@ -251,7 +270,9 @@ class PlantService:
         return self.store.get_board_run(run_id)
 
     def diagnosis_stats(self) -> dict:
-        return stats_module.diagnosis_stats(self.store.all_cases())
+        return stats_module.diagnosis_stats(
+            self.store.all_cases(), history_entries=self.store.all_history_entries()
+        )
 
     def handoff(self) -> dict:
         """The shift handoff payload + its plain-text rendering."""
