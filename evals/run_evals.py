@@ -1,6 +1,6 @@
 """Golden loop eval: known cases in, loop behaviour checked.
 
-Forty-three entries — twenty cases with authored expectations
+Forty-four entries — twenty cases with authored expectations
 (per-case diagnosis class, exit reason, rounds used, draft kind,
 open gaps, verify-stage substitution records), three *defect* cases
 (a deliberately defective planner that drops safety steps, names an
@@ -56,7 +56,16 @@ cases are disposed differently — one closed as moot with its
 claims released, one kept and worked through the gate, a safety
 case kept and still a safety stop — new intake for the dead
 machine is refused with the state named, and the handoff carries
-both retirements with their reasons). Every case
+both retirements with their reasons), and one
+*outlook* entry (the board looking ahead: real cases claim the
+  shelf, two PM obligations are earned the honest way — one part's
+  projected demand is tipped past the shelf by the obligation's
+  due cycle inside the horizon, its bites date the due date
+  itself; a part two cases demand stays covered; a part at
+  exactly zero shortfall is not a risk row; and a retired
+  obligation contributes nothing to a part whose shelf is empty —
+  while the store's records stand byte-identical across the
+  projection, because it is a read model). Every case
 runs the full pipeline through a fresh service on the
 deterministic offline backend, so the gate is hermetic:
 ``uv run python evals/run_evals.py`` exits non-zero below the gate.
@@ -76,6 +85,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from plant_loop import outlook as outlook_module  # noqa: E402
 from plant_loop.backends import OfflineReasoner  # noqa: E402
 from plant_loop.embeddings import HashingEmbedder, InMemoryVectorIndex  # noqa: E402
 from plant_loop.kb import KBRetriever  # noqa: E402
@@ -871,6 +881,111 @@ def run_retirement_entry(entry: dict) -> list[str]:
     return failures
 
 
+def run_outlook_entry(entry: dict) -> list[str]:
+    """The parts outlook, proven on a staged book (outlook.py).
+
+    Real cases run singly — their converged plans claim the
+    shelf — and two obligations are earned the honest way (the
+    watch drafts, a supervisor approves at a chosen clock), one
+    of them retired before the projection is built at the
+    entry's fixed moment. The expectations are hand-computed
+    against the seeded shelf (data/kb.json: HYD-SEAL 3, AIR-FLT
+    5, LINER-045 2, CLNT-FLT 0, CLNT-FLT-E 4): PRESS-1's three
+    hydraulic cases claim all 3 seal kits, so the standing
+    obligation's cycle due 2026-10-18 tips HYD-SEAL to a
+    shortfall of 1 that bites on the due date; two COMP-7 cases
+    demand AIR-FLT and stay covered; two wire-feed cases take
+    LINER-045 to exactly the shelf — covered, not a risk; the
+    coolant cases claim the substitute CLNT-FLT-E, and the
+    retired coolant obligation contributes nothing to CLNT-FLT,
+    whose empty shelf would flag any counted demand. The
+    store's records must stand byte-identical across the build.
+    """
+    service = fresh_service()
+    expected = entry["expected"]
+    failures: list[str] = []
+    for raw in entry["cases"]:
+        service.run_case(ExceptionCase.model_validate(raw))
+
+    def approve(machine_id: str, fault_class: str, decision_spec: dict):
+        proposal = next(
+            (
+                p
+                for p in service.pm_proposals()
+                if p.machine_id == machine_id
+                and p.fault_class == fault_class
+                and p.status == "proposed"
+            ),
+            None,
+        )
+        if proposal is None:
+            failures.append(f"proposal for {machine_id}/{fault_class}: none drafted")
+            return None
+        _proposal, obligation = service.decide_pm_proposal(
+            proposal.proposal_id,
+            "approved",
+            by=decision_spec["by"],
+            interval_days=decision_spec["interval_days"],
+            last_performed_at=decision_spec["last_performed_at"],
+        )
+        if obligation is None:
+            failures.append(f"obligation for {machine_id}: approval created none")
+        return obligation
+
+    spec = entry["outlook"]
+    approve("PRESS-1", "hydraulic_pressure_loss", spec["press_decision"])
+    coolant = approve("CNC-3", "coolant_system_fault", spec["coolant_decision"])
+    if coolant is not None:
+        service.retire_pm_obligation(
+            coolant.obligation_id,
+            by=spec["retirement"]["by"],
+            reason=spec["retirement"]["reason"],
+        )
+
+    def snapshot() -> str:
+        return json.dumps(
+            {
+                "cases": [r.model_dump() for r in service.store.all_cases()],
+                "claims": [c.model_dump() for c in service.store.all_part_claims()],
+                "pm": [r.model_dump() for r in service.store.all_pm_records()],
+            },
+            sort_keys=True,
+            default=str,
+        )
+
+    before = snapshot()
+    outlook = outlook_module.build_outlook(
+        service.store,
+        now=parse_timestamp(spec["as_of"]),
+        horizon_days=spec["horizon_days"],
+    )
+    if snapshot() != before:
+        failures.append("purity: the projection wrote to the store — it is a read model")
+    got_shortages = [
+        {"part_id": p.part_id, "shortfall": p.shortfall, "bites_at": p.bites_at}
+        for p in outlook.shortages
+    ]
+    if got_shortages != expected["shortages"]:
+        failures.append(f"shortages: expected {expected['shortages']}, got {got_shortages}")
+    parts = {p.part_id: p for p in outlook.parts}
+    for part_id, fields in expected.get("parts", {}).items():
+        part = parts.get(part_id)
+        if part is None:
+            failures.append(f"part[{part_id}]: missing from the projection")
+            continue
+        for field, want in fields.items():
+            got = getattr(part, field)
+            if got != want:
+                failures.append(f"part[{part_id}].{field}: expected {want!r}, got {got!r}")
+    for part_id in expected.get("absent_parts", []):
+        if part_id in parts:
+            failures.append(
+                f"part[{part_id}]: expected no projection lines, got "
+                f"{parts[part_id].projected_demand} projected"
+            )
+    return failures
+
+
 def run_gate_entry(entry: dict) -> list[str]:
     """The reasoner regression gate, exercised end to end.
 
@@ -938,6 +1053,8 @@ def main() -> int:
             failures = run_pm_entry(entry)
         elif entry["kind"] == "retirement":
             failures = run_retirement_entry(entry)
+        elif entry["kind"] == "outlook":
+            failures = run_outlook_entry(entry)
         elif entry["kind"] == "gate":
             failures = run_gate_entry(entry)
         else:

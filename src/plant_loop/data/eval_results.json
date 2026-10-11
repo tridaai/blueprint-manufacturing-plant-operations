@@ -1,6 +1,6 @@
 {
- "total": 43,
- "passed": 43,
+ "total": 44,
+ "passed": 44,
  "rate": 1.0,
  "gate": 0.95,
  "gate_passed": true,
@@ -261,6 +261,12 @@
   {
    "id": "RT1",
    "kind": "retirement",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "K1",
+   "kind": "outlook",
    "passed": true,
    "failures": []
   }
