@@ -5,12 +5,13 @@
 #   make demo        the seeded shift board, worked end to end, offline
 #   make test        pytest
 #   make evals       golden loop gate (offline)
+#   make gate        reasoner regression gate: stub candidate vs the committed baseline
 #   make serve       the API + console on http://localhost:8000
 #
 # No uv? python3 -m venv .venv && source .venv/bin/activate, then:
 #   make install-pip pip install -e ".[dev]" -c constraints.txt
 
-.PHONY: install install-pip demo test evals serve
+.PHONY: install install-pip demo test evals gate serve
 
 install:
 	uv sync --extra dev
@@ -31,6 +32,9 @@ test:
 
 evals:
 	uv run python evals/run_evals.py
+
+gate:
+	uv run python evals/run_gate.py check --backend stub
 
 serve:
 	uv run uvicorn plant_loop.api:app --port 8000

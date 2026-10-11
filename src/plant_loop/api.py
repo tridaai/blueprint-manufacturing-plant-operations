@@ -564,3 +564,25 @@ def eval_results():
     if packaged.is_file():
         return json.loads(packaged.read_text(encoding="utf-8"))
     return {"available": False, "note": "run `make evals` to generate results"}
+
+
+@app.get("/evals/gate-baseline")
+def gate_baseline():
+    """The reasoner regression gate's committed baseline record
+    (regression.py): the offline configuration's run over the fixed
+    suite, with the gate criteria and the exit severity order a
+    candidate configuration is judged against. Regenerated — in the
+    open — by `uv run python evals/run_gate.py run --backend offline`.
+    """
+    from . import regression
+
+    packaged = Path(str(resources.files(__package__).joinpath("data/gate_baseline.json")))
+    if packaged.is_file():
+        record = json.loads(packaged.read_text(encoding="utf-8"))
+        return {
+            "record": record,
+            "criteria": regression.GATE_CRITERIA,
+            "severity_order": sorted(regression.EXIT_SEVERITY, key=regression.EXIT_SEVERITY.get),
+            "pin_violations": regression.pin_violations(record),
+        }
+    return {"available": False, "note": "run `uv run python evals/run_gate.py run` to generate the baseline"}

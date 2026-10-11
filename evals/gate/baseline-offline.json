@@ -1,0 +1,301 @@
+{
+ "kind": "reasoner-gate-run",
+ "version": 1,
+ "suite": "golden-cases",
+ "suite_version": 1,
+ "config": {
+  "label": "offline-baseline",
+  "backend": "offline",
+  "model": "rules-v1",
+  "surface": ""
+ },
+ "cases_total": 20,
+ "totals": {
+  "model_calls": 72,
+  "rounds": 24,
+  "input_tokens": 6429,
+  "output_tokens": 8568
+ },
+ "cases": [
+  {
+   "case_id": "G01",
+   "type": "machine_down",
+   "exit": "converged",
+   "rounds": 2,
+   "diagnosis": "spindle_bearing_wear",
+   "model_calls": 6,
+   "input_tokens": 834,
+   "output_tokens": 1172,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": true
+   }
+  },
+  {
+   "case_id": "G02",
+   "type": "safety_observation",
+   "exit": "safety_stop",
+   "rounds": 0,
+   "diagnosis": "",
+   "model_calls": 0,
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "pins": {
+    "safety_zero_calls": true,
+    "mandatory_steps_covered": null
+   }
+  },
+  {
+   "case_id": "G03",
+   "type": "quality_nonconformance",
+   "exit": "converged",
+   "rounds": 1,
+   "diagnosis": "weld_quality_drift",
+   "model_calls": 3,
+   "input_tokens": 357,
+   "output_tokens": 405,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": true
+   }
+  },
+  {
+   "case_id": "G04",
+   "type": "material_shortage",
+   "exit": "converged",
+   "rounds": 1,
+   "diagnosis": "material_shortage",
+   "model_calls": 3,
+   "input_tokens": 276,
+   "output_tokens": 261,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": true
+   }
+  },
+  {
+   "case_id": "G05",
+   "type": "machine_down",
+   "exit": "converged",
+   "rounds": 1,
+   "diagnosis": "hydraulic_pressure_loss",
+   "model_calls": 3,
+   "input_tokens": 366,
+   "output_tokens": 391,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": true
+   }
+  },
+  {
+   "case_id": "G06",
+   "type": "maintenance_alert",
+   "exit": "blocked_external",
+   "rounds": 1,
+   "diagnosis": "cooling_fan_failure",
+   "model_calls": 3,
+   "input_tokens": 357,
+   "output_tokens": 331,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": true
+   }
+  },
+  {
+   "case_id": "G07",
+   "type": "machine_down",
+   "exit": "blocked_external",
+   "rounds": 1,
+   "diagnosis": "spindle_cartridge_failure",
+   "model_calls": 3,
+   "input_tokens": 219,
+   "output_tokens": 259,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": true
+   }
+  },
+  {
+   "case_id": "G08",
+   "type": "quality_nonconformance",
+   "exit": "converged",
+   "rounds": 1,
+   "diagnosis": "seal_temperature_drift",
+   "model_calls": 3,
+   "input_tokens": 267,
+   "output_tokens": 349,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": true
+   }
+  },
+  {
+   "case_id": "G09",
+   "type": "machine_down",
+   "exit": "exhausted",
+   "rounds": 3,
+   "diagnosis": "belt_tracking_fault",
+   "model_calls": 9,
+   "input_tokens": 891,
+   "output_tokens": 1452,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": true
+   }
+  },
+  {
+   "case_id": "G10",
+   "type": "machine_down",
+   "exit": "converged",
+   "rounds": 1,
+   "diagnosis": "coolant_system_fault",
+   "model_calls": 3,
+   "input_tokens": 225,
+   "output_tokens": 384,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": true
+   }
+  },
+  {
+   "case_id": "G11",
+   "type": "machine_down",
+   "exit": "converged",
+   "rounds": 2,
+   "diagnosis": "tool_imbalance",
+   "model_calls": 6,
+   "input_tokens": 492,
+   "output_tokens": 1074,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": true
+   }
+  },
+  {
+   "case_id": "G12",
+   "type": "maintenance_alert",
+   "exit": "converged",
+   "rounds": 1,
+   "diagnosis": "air_pressure_low",
+   "model_calls": 3,
+   "input_tokens": 198,
+   "output_tokens": 290,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": true
+   }
+  },
+  {
+   "case_id": "G13",
+   "type": "quality_nonconformance",
+   "exit": "converged",
+   "rounds": 1,
+   "diagnosis": "label_printer_fault",
+   "model_calls": 3,
+   "input_tokens": 216,
+   "output_tokens": 252,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": true
+   }
+  },
+  {
+   "case_id": "G14",
+   "type": "machine_down",
+   "exit": "converged",
+   "rounds": 1,
+   "diagnosis": "wire_feed_fault",
+   "model_calls": 3,
+   "input_tokens": 222,
+   "output_tokens": 245,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": true
+   }
+  },
+  {
+   "case_id": "G15",
+   "type": "machine_down",
+   "exit": "converged",
+   "rounds": 1,
+   "diagnosis": "belt_tracking_fault",
+   "model_calls": 3,
+   "input_tokens": 225,
+   "output_tokens": 298,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": true
+   }
+  },
+  {
+   "case_id": "G16",
+   "type": "machine_down",
+   "exit": "exhausted",
+   "rounds": 3,
+   "diagnosis": "unknown_fault",
+   "model_calls": 9,
+   "input_tokens": 630,
+   "output_tokens": 411,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": null
+   }
+  },
+  {
+   "case_id": "G17",
+   "type": "material_shortage",
+   "exit": "blocked_external",
+   "rounds": 1,
+   "diagnosis": "material_shortage",
+   "model_calls": 3,
+   "input_tokens": 222,
+   "output_tokens": 261,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": true
+   }
+  },
+  {
+   "case_id": "G18",
+   "type": "safety_observation",
+   "exit": "safety_stop",
+   "rounds": 0,
+   "diagnosis": "",
+   "model_calls": 0,
+   "input_tokens": 0,
+   "output_tokens": 0,
+   "pins": {
+    "safety_zero_calls": true,
+    "mandatory_steps_covered": null
+   }
+  },
+  {
+   "case_id": "G19",
+   "type": "machine_down",
+   "exit": "converged",
+   "rounds": 1,
+   "diagnosis": "hydraulic_pressure_loss",
+   "model_calls": 3,
+   "input_tokens": 213,
+   "output_tokens": 391,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": true
+   }
+  },
+  {
+   "case_id": "G20",
+   "type": "quality_nonconformance",
+   "exit": "converged",
+   "rounds": 1,
+   "diagnosis": "weld_quality_drift",
+   "model_calls": 3,
+   "input_tokens": 219,
+   "output_tokens": 342,
+   "pins": {
+    "safety_zero_calls": null,
+    "mandatory_steps_covered": true
+   }
+  }
+ ]
+}
