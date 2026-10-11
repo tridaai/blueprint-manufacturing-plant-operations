@@ -1,6 +1,6 @@
 """Golden loop eval: known cases in, loop behaviour checked.
 
-Forty-four entries — twenty cases with authored expectations
+Forty-five entries — twenty cases with authored expectations
 (per-case diagnosis class, exit reason, rounds used, draft kind,
 open gaps, verify-stage substitution records), three *defect* cases
 (a deliberately defective planner that drops safety steps, names an
@@ -65,7 +65,15 @@ both retirements with their reasons), and one
   exactly zero shortfall is not a risk row; and a retired
   obligation contributes nothing to a part whose shelf is empty —
   while the store's records stand byte-identical across the
-  projection, because it is a read model). Every case
+  projection, because it is a read model), and one
+*gaps* entry (what the plant doesn't know: two feeder cases on a
+  machine the plant model does not even register exhaust at
+  ``unknown_fault`` — the repeat-gap story, one decided at the
+  gate, one still open — while an exhausted case whose fault HAS
+  an SOP and a case blocked on a part contribute no row, because
+  neither block is missing knowledge; the report must carry
+  exactly the one hand-derived row, and the store stands
+  byte-identical across the build). Every case
 runs the full pipeline through a fresh service on the
 deterministic offline backend, so the gate is hermetic:
 ``uv run python evals/run_evals.py`` exits non-zero below the gate.
@@ -986,6 +994,79 @@ def run_outlook_entry(entry: dict) -> list[str]:
     return failures
 
 
+def run_gaps_entry(entry: dict) -> list[str]:
+    """The knowledge-gap report, proven on a staged board (gaps.py).
+
+    Four real cases run singly on one service. Two feeder cases
+    (the golden pack's G16 shape: FEED-9, a machine the plant
+    model does not even register, no readings) exhaust at
+    ``unknown_fault`` — the first is then rejected at the gate, so
+    the row carries history as well as a live block. Between them
+    run the two boundaries: a conveyor case that exhausts on an
+    unseparated pair whose fault HAS an SOP (not knowledge), and
+    a compressor case that blocks on a part (the outside world,
+    not knowledge). The expectations are hand-derived from those
+    records: exactly one row — FEED-9 / unknown_fault, 2 cases,
+    6 rounds burned (3 each), the second case open now — and the
+    store's records byte-identical across the build.
+    """
+    from plant_loop import gaps as gaps_module
+
+    service = fresh_service()
+    expected = entry["expected"]
+    failures: list[str] = []
+    for raw in entry["cases"]:
+        service.run_case(ExceptionCase.model_validate(raw))
+    for case_id, exit_reason in expected.get("exits", {}).items():
+        record = service.store.get_case(case_id)
+        got = record.exit_reason if record else None
+        if got != exit_reason:
+            failures.append(f"exit[{case_id}]: expected {exit_reason}, got {got}")
+    for case_id, decision in (entry.get("decisions") or {}).items():
+        service.record_decision(case_id, decision, by="Eval Supervisor")
+
+    def snapshot() -> str:
+        return json.dumps(
+            {
+                "cases": [r.model_dump() for r in service.store.all_cases()],
+                "claims": [c.model_dump() for c in service.store.all_part_claims()],
+                "pm": [r.model_dump() for r in service.store.all_pm_records()],
+            },
+            sort_keys=True,
+            default=str,
+        )
+
+    before = snapshot()
+    report = gaps_module.build_gap_report(
+        service.store, now=parse_timestamp("2026-10-12T00:00:00Z")
+    )
+    if snapshot() != before:
+        failures.append("purity: the report wrote to the store — it is a read model")
+    if report.cases_examined != expected["cases_examined"]:
+        failures.append(
+            f"cases_examined: expected {expected['cases_examined']}, "
+            f"got {report.cases_examined}"
+        )
+    if report.blocked_cases != expected["blocked_cases"]:
+        failures.append(
+            f"blocked_cases: expected {expected['blocked_cases']}, "
+            f"got {report.blocked_cases}"
+        )
+    got_gaps = [g.model_dump() for g in report.gaps]
+    want_gaps = expected["gaps"]
+    if len(got_gaps) != len(want_gaps):
+        failures.append(f"gaps: expected {len(want_gaps)} row(s), got {got_gaps}")
+    else:
+        for got, want in zip(got_gaps, want_gaps):
+            for field, want_value in want.items():
+                if got.get(field) != want_value:
+                    failures.append(
+                        f"gap[{want['machine_id']}].{field}: expected "
+                        f"{want_value!r}, got {got.get(field)!r}"
+                    )
+    return failures
+
+
 def run_gate_entry(entry: dict) -> list[str]:
     """The reasoner regression gate, exercised end to end.
 
@@ -1055,6 +1136,8 @@ def main() -> int:
             failures = run_retirement_entry(entry)
         elif entry["kind"] == "outlook":
             failures = run_outlook_entry(entry)
+        elif entry["kind"] == "gaps":
+            failures = run_gaps_entry(entry)
         elif entry["kind"] == "gate":
             failures = run_gate_entry(entry)
         else:
