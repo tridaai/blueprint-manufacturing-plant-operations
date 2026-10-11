@@ -1,10 +1,10 @@
 {
   "plant": {"name": "Meridian Fabrication, Plant 2", "note": "Fictional plant. All SOPs, histories, parts and readings in this repository are synthetic."},
   "lines": [
-    {"line_id": "line-a", "name": "Press Line", "criticality": 3},
-    {"line_id": "line-b", "name": "CNC Machining", "criticality": 3},
-    {"line_id": "line-c", "name": "Welding", "criticality": 2},
-    {"line_id": "line-d", "name": "Assembly & Packing", "criticality": 2},
+    {"line_id": "line-a", "name": "Press Line", "criticality": 3, "downtime_rate_usd_per_hour": 2400},
+    {"line_id": "line-b", "name": "CNC Machining", "criticality": 3, "downtime_rate_usd_per_hour": 1800},
+    {"line_id": "line-c", "name": "Welding", "criticality": 2, "downtime_rate_usd_per_hour": 950},
+    {"line_id": "line-d", "name": "Assembly & Packing", "criticality": 2, "downtime_rate_usd_per_hour": 720},
     {"line_id": "line-e", "name": "Utilities", "criticality": 1}
   ],
   "machines": [

@@ -319,6 +319,48 @@ class PartClaim(BaseModel):
     release_reason: str = ""  # released_by_gate_rejection
 
 
+class CaseEconomics(BaseModel):
+    """One case priced in downtime dollars (economics.py).
+
+    The exposure is the plan's own estimated downtime priced at the
+    line's rate in the plant model — an estimate of what leaving
+    this case waiting costs per the plan, nothing more: it reorders
+    nothing (priority stays the severity formula's), and it is never
+    computed for a safety stop, whose record carries no economics
+    at all. ``rate_usd_per_hour`` is ``None`` when the plant model
+    carries no rate for the line; every dollar figure is then
+    ``None`` too — minutes are shown, dollars are not invented.
+    Actuals join the snapshot when the supervisor records the
+    outcome, at the same rate.
+    """
+
+    line_id: str = ""
+    rate_usd_per_hour: float | None = None
+    rate_basis: str = ""  # where the rate comes from, cited on the figure
+    estimated_minutes: int = 0
+    estimated_usd: float | None = None
+    actual_minutes: int | None = None
+    actual_usd: float | None = None
+
+
+class BoardEconomics(BaseModel):
+    """A set of cases priced as one board (economics.py).
+
+    Dollar totals cover only the cases on lines the plant model
+    rates; the minutes on unrated lines are summed separately and
+    never folded into a dollar figure. ``estimated_exposure_usd``
+    is ``None`` when no case in the set is costed at all.
+    """
+
+    cases_costed: int = 0
+    cases_minutes_only: int = 0
+    estimated_minutes: int = 0
+    unrated_minutes: int = 0
+    estimated_exposure_usd: float | None = None
+    largest_exposure_case_id: str = ""
+    largest_exposure_usd: float | None = None
+
+
 class TraceStep(BaseModel):
     name: str
     title: str
@@ -355,6 +397,10 @@ class CaseResult(BaseModel):
     decision_reason: str = ""
     # What actually happened after the gate, when recorded.
     outcome: SupervisorOutcome | None = None
+    # The case priced in downtime dollars (economics.py). Stamped
+    # when the record is persisted and refreshed when the outcome
+    # lands; None on a safety stop, by design.
+    economics: CaseEconomics | None = None
     trace: list[TraceStep] = Field(default_factory=list)
 
 
@@ -369,6 +415,9 @@ class BoardRunResult(BaseModel):
     # The allocation ledger for this run: the part claims its
     # converged cases made, with their standing (allocation.py).
     allocations: list[PartClaim] = Field(default_factory=list)
+    # The run priced in downtime dollars: the estimated exposure
+    # its processed cases carry (economics.py).
+    economics: BoardEconomics | None = None
     handoff_summary: str = ""
     telemetry: CaseTelemetry = Field(default_factory=CaseTelemetry)
     created_at: str = ""

@@ -49,6 +49,21 @@ def line_criticality(line_id: str) -> int:
     return int(line["criticality"]) if line else 1
 
 
+def line_downtime_rate(line_id: str) -> float | None:
+    """The line's downtime cost rate (USD/hour), as authored in the
+    plant model — or ``None`` when the model carries no rate for the
+    line. Absence is a fact, not a zero: economics built on this
+    accessor show such a line's minutes and no dollars, and never
+    invent a rate (economics.py). Utilities (line-e) carries none —
+    its downtime is not charged to a product line in this plant
+    model."""
+    line = lines().get(line_id or "")
+    if not line:
+        return None
+    rate = line.get("downtime_rate_usd_per_hour")
+    return float(rate) if rate is not None else None
+
+
 def machines() -> dict[str, dict]:
     return {m["machine_id"]: m for m in load_kb()["machines"]}
 
