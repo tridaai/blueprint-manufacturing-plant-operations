@@ -9,8 +9,9 @@ in inventory, the banned-action screen):
   diagnosed SOP must be present in the plan. A plan missing one can
   never converge, however confident the diagnosis.
 - **parts reality** — every required part must be satisfied against
-  inventory (directly or via the SOP-approved substitute); a plan
-  step that names a part the plant does not stock is a defect.
+  inventory, directly or via a substitute the verify stage's search
+  applied (substitution.py); a plan step that names a part the plant
+  does not stock is a defect.
 - **banned actions** — no plan step may recommend defeating a safety
   device or skipping lockout/tagout (screening.py). A safety-class
   banned action stops the loop immediately.
@@ -90,15 +91,16 @@ def verify_plan(case: ExceptionCase, diagnosis: Diagnosis, plan: ActionPlan) -> 
             )
 
     # 2 · parts reality — requirements the shelf cannot satisfy, and
-    # steps naming parts the plant does not stock at all.
+    # steps naming parts the plant does not stock at all. The detail
+    # states the shelf fact; the verify stage's substitute search
+    # (substitution.py) appends its outcome to the gap it cannot fix.
     for req in plan.required_parts:
         if not req.satisfied:
             gaps.append(
                 Gap(
                     kind="part_unavailable",
                     detail=(
-                        f"part {req.part_id} needs {req.qty}, shelf holds {req.available_qty}, "
-                        "and no approved substitute is available"
+                        f"part {req.part_id} needs {req.qty}, shelf holds {req.available_qty}"
                     ),
                     ref=req.part_id,
                     blocking=True,

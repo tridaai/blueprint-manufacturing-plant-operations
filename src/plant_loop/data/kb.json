@@ -19,19 +19,20 @@
   "parts": [
     {"part_id": "BRG-6208", "name": "Spindle bearing 6208-2RS", "qty_on_hand": 2, "location": "Stores B4"},
     {"part_id": "TOOL-HSK63", "name": "Tool holder HSK63, balanced", "qty_on_hand": 3, "location": "Tool crib 2"},
-    {"part_id": "CLNT-FLT", "name": "Coolant filter cartridge, standard", "qty_on_hand": 0, "location": "Stores B7"},
-    {"part_id": "CLNT-FLT-E", "name": "Coolant filter cartridge, extended-life", "qty_on_hand": 4, "location": "Stores B7"},
+    {"part_id": "CLNT-FLT", "name": "Coolant filter cartridge, standard", "qty_on_hand": 0, "location": "Stores B7", "specs": {"micron_rating_um": 25, "fitting": "spin-on, M22"}},
+    {"part_id": "CLNT-FLT-E", "name": "Coolant filter cartridge, extended-life", "qty_on_hand": 4, "location": "Stores B7", "specs": {"micron_rating_um": 10, "fitting": "spin-on, M22"}},
     {"part_id": "SPN-CART", "name": "Spindle cartridge, CNC-2 (vendor exchange)", "qty_on_hand": 0, "location": "Vendor exchange only"},
     {"part_id": "HYD-SEAL", "name": "Hydraulic seal kit, PRESS-1 ram", "qty_on_hand": 3, "location": "Stores A2"},
     {"part_id": "TIP-08", "name": "Contact tip 0.8 mm, MIG (pack of 10)", "qty_on_hand": 20, "location": "Weld stores"},
     {"part_id": "LINER-045", "name": "Wire liner 0.45 m, MIG torch", "qty_on_hand": 2, "location": "Weld stores"},
     {"part_id": "BELT-5M", "name": "Conveyor belt section, 5 m", "qty_on_hand": 1, "location": "Stores D1"},
-    {"part_id": "FAN-C7", "name": "Cooling fan assembly, COMP-7", "qty_on_hand": 0, "location": "Stores E3"},
+    {"part_id": "FAN-C7", "name": "Cooling fan assembly, COMP-7", "qty_on_hand": 0, "location": "Stores E3", "specs": {"airflow_m3h": 450, "mount": "COMP-7 flange, 4-bolt"}},
+    {"part_id": "FAN-C7-G", "name": "Cooling fan assembly, COMP-7 (generic)", "qty_on_hand": 3, "location": "Stores E3", "specs": {"airflow_m3h": 380, "mount": "COMP-7 flange, 4-bolt"}},
     {"part_id": "AIR-FLT", "name": "Intake air filter, COMP-7", "qty_on_hand": 5, "location": "Stores E3"},
     {"part_id": "SEAL-BAR", "name": "Heat seal bar, PACK-6", "qty_on_hand": 2, "location": "Stores D4"},
     {"part_id": "PRT-HEAD", "name": "Thermal print head, label printer", "qty_on_hand": 1, "location": "Stores D4"},
-    {"part_id": "FILM-PKG", "name": "Packing film, 450 mm (roll)", "qty_on_hand": 0, "location": "Stores D6"},
-    {"part_id": "FILM-PKG-B", "name": "Packing film, 450 mm, grade B (roll)", "qty_on_hand": 6, "location": "Stores D6"}
+    {"part_id": "FILM-PKG", "name": "Packing film, 450 mm (roll)", "qty_on_hand": 0, "location": "Stores D6", "specs": {"grade": "A", "food_contact": true, "width_mm": 450, "thickness_um": 45}},
+    {"part_id": "FILM-PKG-B", "name": "Packing film, 450 mm, grade B (roll)", "qty_on_hand": 6, "location": "Stores D6", "specs": {"grade": "B", "food_contact": false, "width_mm": 450, "thickness_um": 38}}
   ],
   "sops": [
     {
@@ -88,7 +89,17 @@
         {"step_id": "flow-check", "text": "Restore flow and confirm coolant flow is at least 8 L/min at the nozzle.", "part_id": "", "qty": 0}
       ],
       "required_parts": [{"part_id": "CLNT-FLT", "qty": 1}],
-      "substitutes": {"CLNT-FLT": "CLNT-FLT-E"},
+      "substitutes": {"CLNT-FLT": [
+        {"part_id": "CLNT-FLT-E",
+         "basis": "Same spin-on M22 fitting and housing; the extended-life element is approved for CNC-3 coolant service.",
+         "spec_deltas": [
+           {"attribute": "micron_rating_um", "original": 25, "substitute": 10, "note": "finer filtration — exceeds the SOP cleanliness requirement"},
+           {"attribute": "service_life", "original": "standard", "substitute": "extended", "note": "longer change interval; no plan change"}
+         ]}
+      ]},
+      "part_constraints": {"CLNT-FLT": [
+        {"attribute": "micron_rating_um", "op": "<=", "value": 25, "reason": "the coolant cleanliness class the CNC-3 spindle bearings require"}
+      ]},
       "estimated_downtime_min": 45,
       "keywords": ["coolant", "flow", "filter", "pressure", "overheating"]
     },
@@ -215,7 +226,16 @@
         {"step_id": "temp-run", "text": "Run the compressor for 15 minutes and confirm discharge temperature settles below 95 C.", "part_id": "", "qty": 0}
       ],
       "required_parts": [{"part_id": "FAN-C7", "qty": 1}],
-      "substitutes": {},
+      "substitutes": {"FAN-C7": [
+        {"part_id": "FAN-C7-G",
+         "basis": "Same 4-bolt COMP-7 flange mount and connector; a generic assembly the stores keep as a stopgap.",
+         "spec_deltas": [
+           {"attribute": "airflow_m3h", "original": 450, "substitute": 380, "note": "lower rated airflow than the OEM assembly"}
+         ]}
+      ]},
+      "part_constraints": {"FAN-C7": [
+        {"attribute": "airflow_m3h", "op": ">=", "value": 420, "reason": "discharge cooling at full load — the compressor overheats below 420 m3/h of fan airflow"}
+      ]},
       "estimated_downtime_min": 90,
       "keywords": ["fan", "temperature", "compressor", "cooling", "discharge", "overheat"]
     },
@@ -284,7 +304,19 @@
         {"step_id": "raise-expedite", "text": "Raise an expedite request against the open purchase order and note the promised time for the shift handover.", "part_id": "", "qty": 0}
       ],
       "required_parts": [],
-      "substitutes": {"FILM-PKG": "FILM-PKG-B"},
+      "substitutes": {"FILM-PKG": [
+        {"part_id": "FILM-PKG-B",
+         "basis": "Same 450 mm width and core; grade B film is approved for the retail-carton packing this SOP covers.",
+         "spec_deltas": [
+           {"attribute": "grade", "original": "A", "substitute": "B", "note": "lower grade — the supervisor sees this delta on the record"},
+           {"attribute": "food_contact", "original": true, "substitute": false, "note": "grade B is not food-contact rated; the lines this SOP covers pack retail cartons, not food"},
+           {"attribute": "thickness_um", "original": 45, "substitute": 38, "note": "thinner film — still above the seal-jaw minimum in the constraints"}
+         ]}
+      ]},
+      "part_constraints": {"FILM-PKG": [
+        {"attribute": "width_mm", "op": "==", "value": 450, "reason": "the PACK-6 seal jaw is 450 mm wide"},
+        {"attribute": "thickness_um", "op": ">=", "value": 35, "reason": "seal integrity on the PACK-6 jaw below 35 um is unreliable"}
+      ]},
       "estimated_downtime_min": 20,
       "keywords": ["shortage", "stock", "film", "material", "ran out", "expedite"]
     }

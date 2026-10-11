@@ -11,15 +11,24 @@ the graph and the plain-code path can never drift apart.
                         └──── exit ──→ draft → supervisor gate
 
 The verify round merges two critics: the reasoner's critique and
-the code checks in ``guardrails.verify_plan``. Code wins ties — a
-model cannot talk a missing safety step out of existence. Exits are
-decided in code (:meth:`CaseLoopController.decide_exit`):
+the code checks in ``guardrails.verify_plan``. Before those checks
+run, the verify stage does its parts work in code
+(``substitution.py``): every requirement is re-measured against the
+shelf, and for one the shelf cannot satisfy, the KB's compatibility
+relation is searched — a candidate that is in stock *and* clears
+the SOP's constraints for the slot is applied to the plan (recorded
+as a first-class substitution), and the code verify then measures
+the revised plan. Code wins ties — a model cannot talk a missing
+safety step out of existence. Exits are decided in code
+(:meth:`CaseLoopController.decide_exit`):
 
 - ``SAFETY_STOP`` — a safety_observation case (round 0, before any
   reasoning), or a plan step that recommends a safety bypass.
-- ``BLOCKED_EXTERNAL`` — a required part is unavailable with no
-  approved substitute on the shelf. Looping cannot fix a stockout;
-  the case escalates to whoever can order or substitute.
+- ``BLOCKED_EXTERNAL`` — a required part is unavailable and the
+  substitute search found nothing usable: no candidate listed, none
+  in stock, or every candidate rejected by the SOP's constraints.
+  Looping cannot fix a stockout; the case escalates to whoever can
+  order parts, with the search documented on the record.
 - ``CONVERGED`` — verify found no gaps. The plan may be drafted as a
   work order (still only a draft; the supervisor decides).
 - ``BUDGET_EXCEEDED`` — the case's token budget is spent.
@@ -39,7 +48,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from . import guardrails, kb
+from . import guardrails, kb, substitution
 from .config import env_int
 from .events import NullSink, RunEvent
 from .ports import CaseContext, EventSink, Reasoner, Retriever
@@ -57,6 +66,7 @@ from .schemas import (
     ExceptionCase,
     Gap,
     RoundRecord,
+    Substitution,
 )
 
 
@@ -151,6 +161,13 @@ def _gap_keys(gaps: list[Gap]) -> list[str]:
     return [f"{g.kind}:{g.ref}" for g in gaps]
 
 
+def _substitution_line(record: Substitution) -> str:
+    """One timeline line for a verify-stage search outcome."""
+    if record.status == "applied":
+        return f"{record.original_part_id}->{record.substitute_part_id} applied"
+    return f"{record.substitute_part_id} rejected for {record.original_part_id}"
+
+
 def _merge_gaps(model_gaps: list[Gap], code_gaps: list[Gap]) -> list[Gap]:
     """Union of both critics, deduped by (kind, ref); code wins."""
     merged: dict[tuple[str, str], Gap] = {}
@@ -200,6 +217,64 @@ class CaseLoopController:
         run.plan = out.payload
         self._account(run, out)
 
+    # -- the verify stage's parts work (code, every round) -------------------
+
+    def _parts_pass(
+        self, run: CaseRun
+    ) -> tuple[list[Substitution], set[str], dict[str, str]]:
+        """Shelf truth, then the substitute search (substitution.py).
+
+        A plan's part requirements are claims — the planner may have
+        guessed at stock, or resolved a part through a substitute
+        nobody re-checked. The pass re-measures every requirement
+        against inventory, then searches the KB compatibility
+        relation for what the shelf cannot satisfy: a passing
+        candidate is applied to the plan (steps revised, requirement
+        satisfied by substitute, the substitution recorded), a
+        failing one is recorded as rejected with its reason.
+
+        Returns this round's search records, the part ids the pass
+        resolved (directly or by substitution), and — for parts it
+        could not resolve — the search documentation that the
+        surviving gap carries onto the record.
+        """
+        plan = run.plan
+        top = run.diagnosis.top()
+        sop = kb.sop_for(run.case.machine_id, top.fault_class) if top else None
+        records: list[Substitution] = []
+        resolved: set[str] = set()
+        notes: dict[str, str] = {}
+        for req in plan.required_parts:
+            on_hand = kb.part_qty(req.part_id)
+            req.available_qty = on_hand or 0
+            req.satisfied = on_hand is not None and on_hand >= req.qty
+            # The pass owns the substitute marker too: a planner-set
+            # substitute is a claim until the search below verifies
+            # it; apply_to_plan sets the field only for a winner.
+            req.substitute_part_id = ""
+            if req.satisfied:
+                resolved.add(req.part_id)
+        for req in plan.required_parts:
+            if req.satisfied:
+                continue
+            winner, considered = substitution.evaluate(sop, req.part_id, req.qty)
+            known = {
+                (s.original_part_id, s.substitute_part_id, s.status)
+                for s in plan.substitutions
+            }
+            for record in considered:
+                records.append(record)
+                key = (record.original_part_id, record.substitute_part_id, record.status)
+                if key not in known:
+                    plan.substitutions.append(record)
+                    known.add(key)
+            if winner is not None:
+                substitution.apply_to_plan(plan, winner)
+                resolved.add(req.part_id)
+            else:
+                notes[req.part_id] = substitution.search_summary(req.part_id, considered)
+        return records, resolved, notes
+
     def verify_round(self, run: CaseRun) -> None:
         self.sink.emit(RunEvent(type="round_started", case_id=run.case.case_id,
                                 detail={"round": run.round_no, "phase": "verify"}))
@@ -207,8 +282,20 @@ class CaseLoopController:
         out = self.reasoner.critique(run.ctx, run.diagnosis, run.plan)
         self._account(run, out)
         critique: Critique = out.payload
+        # The parts pass runs before the code verify, so the code
+        # checks measure the revised plan — and a part the pass
+        # resolved is no longer a gap, whoever first reported it.
+        search_records, resolved_parts, search_notes = self._parts_pass(run)
         code_gaps = guardrails.verify_plan(run.case, run.diagnosis, run.plan)
-        merged = _merge_gaps(critique.gaps, code_gaps)
+        for gap in code_gaps:
+            if gap.kind == "part_unavailable" and gap.ref in search_notes:
+                gap.detail = f"{gap.detail} — {search_notes[gap.ref]}"
+        model_gaps = [
+            gap
+            for gap in critique.gaps
+            if not (gap.kind == "part_unavailable" and gap.ref in resolved_parts)
+        ]
+        merged = _merge_gaps(model_gaps, code_gaps)
         current_keys = _gap_keys(merged)
         top = run.diagnosis.top()
         # Token fields hold cumulative totals at this point; the
@@ -222,6 +309,7 @@ class CaseLoopController:
                 steps=len(run.plan.steps),
                 gaps_opened=[k for k in current_keys if k not in previous_keys],
                 gaps_closed=[k for k in previous_keys if k not in current_keys],
+                substitutions=[_substitution_line(r) for r in search_records],
                 input_tokens=run.input_tokens,
                 output_tokens=run.output_tokens,
             )
@@ -249,22 +337,22 @@ class CaseLoopController:
     # -- exit decision (pure code) ------------------------------------------
 
     def _blocked_part(self, run: CaseRun) -> str:
-        """A part gap the loop cannot work: not stocked, or stocked
-        out with no approved substitute on the shelf."""
+        """A part gap the loop cannot work: re-running the verify
+        stage's own search finds no candidate that is in stock and
+        clears the SOP's constraints for the slot."""
         top = run.diagnosis.top()
         sop = kb.sop_for(run.case.machine_id, top.fault_class) if top else None
         for gap in run.gaps:
             if gap.kind != "part_unavailable":
                 continue
-            part = gap.ref
-            if kb.part_qty(part) is None:
-                return part  # not a stocked part at all — order/vendor
-            substitute = kb.substitute_for(sop, part)
-            if substitute and (kb.part_qty(substitute) or 0) >= 1:
-                continue  # a substitute exists; the planner can work it
-            if (kb.part_qty(part) or 0) >= 1:
-                continue  # shelf has some; a plan revision can re-check qty
-            return part
+            req = next(
+                (r for r in run.plan.required_parts if r.part_id == gap.ref), None
+            )
+            winner, _considered = substitution.evaluate(
+                sop, gap.ref, req.qty if req else 1
+            )
+            if winner is None:
+                return gap.ref
         return ""
 
     def decide_exit(self, run: CaseRun) -> str:

@@ -27,6 +27,25 @@ def _header(case: ExceptionCase) -> list[str]:
     ]
 
 
+def _substitution_lines(result: CaseResult, status: str) -> list[str]:
+    """The plan's substitution records of one status, rendered."""
+    lines = []
+    for record in result.plan.substitutions:
+        if record.status != status:
+            continue
+        lines.append(f"  - {record.original_part_id} -> {record.substitute_part_id}")
+        if record.basis:
+            lines.append(f"    basis: {record.basis}")
+        for delta in record.spec_deltas:
+            note = f" ({delta.note})" if delta.note else ""
+            lines.append(
+                f"    delta: {delta.attribute} {delta.original} -> {delta.substitute}{note}"
+            )
+        if record.reason:
+            lines.append(f"    {record.reason}")
+    return lines
+
+
 def build_work_order(case: ExceptionCase, result: CaseResult) -> str:
     """The draft work order for a converged case."""
     lines = ["DRAFT WORK ORDER — NOT AUTHORISED UNTIL A SUPERVISOR APPROVES", ""]
@@ -38,6 +57,14 @@ def build_work_order(case: ExceptionCase, result: CaseResult) -> str:
         lines.append(f"  {top.statement}")
         for item in top.evidence:
             lines.append(f"  evidence: {item}")
+    applied = [s for s in result.plan.substitutions if s.status == "applied"]
+    if applied:
+        lines.append("")
+        lines.append(
+            "SUBSTITUTION — this plan runs on substitute part(s). "
+            "The supervisor approves the substitution knowingly, or not at all:"
+        )
+        lines += _substitution_lines(result, "applied")
     lines.append("")
     lines.append("MANDATORY SAFETY STEPS (non-removable):")
     safety_steps = [s for s in result.plan.steps if s.kind == "safety" or s.mandatory]
@@ -101,6 +128,18 @@ def build_escalation(case: ExceptionCase, result: CaseResult) -> str:
         for gap in result.open_gaps:
             lines.append(f"  - [{gap.kind}] {gap.detail}")
     if result.exit_reason == "blocked_external":
+        searched = {s.original_part_id for s in result.plan.substitutions}
+        missing = [r.part_id for r in result.plan.required_parts if not r.satisfied]
+        lines.append("")
+        lines.append("Substitute search (run at the verify stage, in code):")
+        if result.plan.substitutions:
+            lines += _substitution_lines(result, "rejected")
+        for part_id in missing:
+            if part_id not in searched:
+                lines.append(
+                    f"  - {part_id}: no substitute is listed in the KB "
+                    "compatibility relation for this part"
+                )
         lines.append("")
         lines.append(
             "What is needed from outside the loop: the part(s) above ordered or the "

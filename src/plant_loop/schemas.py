@@ -97,9 +97,43 @@ class PartRequirement(BaseModel):
     substitute_part_id: str = ""  # set when the plan runs on a substitute
 
 
+class SpecDelta(BaseModel):
+    """One spec difference between an original part and a substitute."""
+
+    attribute: str
+    original: str | int | float | bool | None = None
+    substitute: str | int | float | bool | None = None
+    note: str = ""
+
+
+class Substitution(BaseModel):
+    """One substitute-search outcome, recorded on the plan.
+
+    The verify stage runs the search in code (substitution.py): the
+    KB lists candidates as *compatible* — with a basis and the spec
+    deltas that matter — and each candidate is then checked against
+    the shelf and the SOP's constraints for the slot. A candidate
+    that clears both is ``applied``: the plan is revised onto it and
+    the record carries the substitution openly, so the supervisor
+    approves it knowingly. A candidate that fails is ``rejected``
+    with the reason named (out of stock, or the constraint it
+    violated). Rejections are paperwork, not decoration: they are
+    how a blocked case documents that the search actually happened.
+    """
+
+    original_part_id: str
+    substitute_part_id: str
+    qty: int = 1
+    basis: str = ""  # the KB's compatibility basis for the pairing
+    spec_deltas: list[SpecDelta] = Field(default_factory=list)
+    status: str = "applied"  # applied | rejected
+    reason: str = ""  # applied: what it cleared · rejected: why it failed
+
+
 class ActionPlan(BaseModel):
     steps: list[PlanStep] = Field(default_factory=list)
     required_parts: list[PartRequirement] = Field(default_factory=list)
+    substitutions: list[Substitution] = Field(default_factory=list)
     estimated_downtime_min: int = 0
     addresses: list[str] = Field(default_factory=list)  # fault classes the plan covers
     notes: str = ""
@@ -130,6 +164,7 @@ class RoundRecord(BaseModel):
     steps: int = 0
     gaps_opened: list[str] = Field(default_factory=list)  # gap kinds, this round
     gaps_closed: list[str] = Field(default_factory=list)  # gap kinds closed vs prior round
+    substitutions: list[str] = Field(default_factory=list)  # verify-stage search, this round
     input_tokens: int = 0
     output_tokens: int = 0
     latency_ms: float = 0.0

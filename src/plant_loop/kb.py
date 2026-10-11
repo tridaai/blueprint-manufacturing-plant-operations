@@ -94,10 +94,58 @@ def part_qty(part_id: str) -> int | None:
 
 
 def substitute_for(sop: dict | None, part_id: str) -> str:
-    """The SOP-approved substitute for a part ('' when none approved)."""
+    """The first KB-listed substitute for a part ('' when none listed)."""
+    entries = substitute_entries(sop, part_id)
+    return entries[0]["part_id"] if entries else ""
+
+
+def substitute_entries(sop: dict | None, part_id: str) -> list[dict]:
+    """The compatibility relation for one part slot, in search order.
+
+    Each entry names a substitute the KB lists as compatible with the
+    slot, the *basis* for that compatibility (fitting, service,
+    approval), and the spec deltas that matter — the differences a
+    supervisor should see before approving a plan that runs on the
+    substitute. Listing is not approval to use: the verify stage
+    still checks each candidate against the shelf and the SOP's
+    constraints for the slot (see substitution.py).
+    """
     if not sop:
-        return ""
-    return str(sop.get("substitutes", {}).get(part_id, ""))
+        return []
+    raw = sop.get("substitutes", {}).get(part_id, [])
+    entries: list[dict] = []
+    for entry in raw:
+        if isinstance(entry, str):  # a bare id carries no basis/deltas
+            entries.append({"part_id": entry, "basis": "", "spec_deltas": []})
+        else:
+            entries.append(
+                {
+                    "part_id": str(entry.get("part_id", "")),
+                    "basis": str(entry.get("basis", "")),
+                    "spec_deltas": list(entry.get("spec_deltas", [])),
+                }
+            )
+    return [e for e in entries if e["part_id"]]
+
+
+def part_specs(part_id: str) -> dict:
+    """The part's spec sheet ({} when the register carries none)."""
+    part = inventory().get(part_id)
+    return dict(part.get("specs", {})) if part else {}
+
+
+def part_constraints(sop: dict | None, part_id: str) -> list[dict]:
+    """The SOP's constraints on whatever fills this part slot.
+
+    Each constraint is ``{attribute, op, value, reason}`` over the
+    candidate part's spec sheet — e.g. a fan slot that requires
+    ``airflow_m3h >= 420``. A substitute that violates one is
+    rejected at the verify stage, however compatible the KB calls
+    it: the SOP's physics outranks the catalogue's optimism.
+    """
+    if not sop:
+        return []
+    return list(sop.get("part_constraints", {}).get(part_id, []))
 
 
 def fault_classes() -> list[str]:

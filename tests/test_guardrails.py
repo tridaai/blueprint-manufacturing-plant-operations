@@ -64,10 +64,15 @@ def test_foreign_sop_reference_is_a_contradiction():
 
 
 def test_substitute_part_satisfies_the_requirement():
-    # The coolant case: CLNT-FLT is out of stock; the SOP's approved
-    # substitute is not, so the requirement is satisfied BY SUBSTITUTE
-    # and the plan verifies clean.
+    # The coolant case: CLNT-FLT is out of stock. The drafted plan
+    # now carries the requirement honestly unsatisfied — substitution
+    # moved out of the planner in round 3 — and the loop's verify
+    # stage searches the KB compatibility relation, applies
+    # CLNT-FLT-E, and only then does the plan verify clean, with the
+    # substitution recorded on the plan.
     from plant_loop.schemas import ExceptionCase
+
+    from helpers import make_controller
 
     case = ExceptionCase.model_validate({
         "case_id": "T-COOL", "type": "machine_down", "title": "Coolant flow low",
@@ -78,8 +83,15 @@ def test_substitute_part_satisfies_the_requirement():
     diagnosis = REASONER.diagnose(ctx, focus=[]).payload
     plan = REASONER.draft_plan(ctx, diagnosis, focus=[]).payload
     req = next(r for r in plan.required_parts if r.part_id == "CLNT-FLT")
+    assert not req.satisfied and not req.substitute_part_id  # the planner no longer swaps
+
+    outcome = make_controller().run_case(case, "coolant flow low")
+    assert outcome.exit_reason == "converged"
+    req = next(r for r in outcome.plan.required_parts if r.part_id == "CLNT-FLT")
     assert req.satisfied and req.substitute_part_id == "CLNT-FLT-E"
-    assert guardrails.verify_plan(case, diagnosis, plan) == []
+    applied = [s for s in outcome.plan.substitutions if s.status == "applied"]
+    assert [s.substitute_part_id for s in applied] == ["CLNT-FLT-E"]
+    assert guardrails.verify_plan(case, outcome.diagnosis, outcome.plan) == []
 
 
 def test_draft_language_screen():
