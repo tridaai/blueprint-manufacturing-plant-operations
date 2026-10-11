@@ -22,6 +22,13 @@ current records, for the supervisor handing the plant over:
   awaiting a supervisor's decision, and every deferral on record,
   so an inspection that keeps being put off is visible in the log,
   not just true;
+- the coming parts shortages (outlook.py): the parts whose
+  projected demand — standing claims, open cases' unsatisfied
+  plan requirements, and the PM cycles falling due inside the
+  outlook's horizon — passes the shelf, each with the shortfall
+  and the moment it bites, so the next shift sees a shortage
+  while it is still a date on a calendar rather than a blocked
+  case at the workbench;
 - the board priced in downtime dollars (economics.py): the
   estimated exposure still open at the gate, the largest single
   open exposure, and the closed cases' recorded actuals — minutes
@@ -44,6 +51,7 @@ import re
 from datetime import datetime, timezone
 
 from . import economics as economics_module
+from . import outlook as outlook_module
 from .events import format_timestamp
 from .ports import Store
 from .schemas import (
@@ -287,6 +295,12 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
         ],
     }
 
+    # The parts outlook (outlook.py): the same projection the API
+    # and CLI serve, computed at the handoff's own moment over the
+    # authored horizon — the shortages section the render prints
+    # for the incoming shift.
+    parts_outlook = outlook_module.build_outlook(store, now=moment).model_dump()
+
     last_run = None
     if runs:
         latest = max(runs, key=lambda run: (run.get("created_at", ""), run.get("run_id", "")))
@@ -329,6 +343,7 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
         "economics": economics,
         "carry_over": carry_over,
         "pm": pm,
+        "parts_outlook": parts_outlook,
         "last_board_run": last_run,
     }
 
@@ -516,6 +531,21 @@ def render_text(handoff: dict) -> str:
             f"cycle case {entry['case_id']} · {entry['at']} by "
             f"{entry['by'] or '-'} — {entry['reason']} · due rolled "
             f"{entry['previous_due_at']} -> {entry['rolled_to']}"
+        )
+    outlook = handoff.get("parts_outlook") or {"shortages": [], "horizon_days": 0}
+    lines += ["", f"COMING PARTS SHORTAGES ({outlook['horizon_days']}-DAY OUTLOOK):"]
+    if outlook["shortages"]:
+        for part in outlook["shortages"]:
+            lines.append(
+                f"  - {part['part_id']} · short {part['shortfall']} · projected "
+                f"{part['projected_demand']} vs "
+                f"{part['on_hand'] if part['stocked'] else 0} on hand · bites "
+                f"{part['bites_at']} · {part['bites_note']}"
+            )
+    else:
+        lines.append(
+            "  (none — projected demand inside the horizon is covered "
+            "by the shelf)"
         )
     run = handoff["last_board_run"]
     lines += ["", "LAST BOARD RUN:"]

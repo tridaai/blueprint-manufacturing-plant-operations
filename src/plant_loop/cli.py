@@ -8,6 +8,7 @@
     plant-loop pm-obligations             PM obligations (standing + retired)
     plant-loop pm-decide PMP-x approved   decide a PM proposal (pm.py)
     plant-loop pm-retire PMO-x            retire a PM obligation (pm.py)
+    plant-loop outlook [--horizon-days N] projected parts demand vs the shelf
     plant-loop machines                   machines + lifecycle state
     plant-loop machine-decommission CNC-2 decommission a machine (lifecycle.py)
     plant-loop machine-dispose CNC-2 C-1  dispose one open case of it
@@ -29,6 +30,7 @@ from .config import load_dotenv, silence_langchain_deprecation_warnings
 
 silence_langchain_deprecation_warnings()
 
+from . import outlook as outlook_module  # noqa: E402
 from .events import PrintingSink  # noqa: E402
 from .loops import BoardPolicy  # noqa: E402
 from .samples import load_sample_cases  # noqa: E402
@@ -106,6 +108,14 @@ def main(argv: list[str] | None = None) -> int:
     machine_dispose.add_argument("case_id")
     machine_dispose.add_argument("disposition", choices=["keep", "close_moot"])
     machine_dispose.add_argument("--by", default="", help="whose choice this is (required)")
+
+    outlook = sub.add_parser(
+        "outlook", help="projected parts demand against the shelf (outlook.py)"
+    )
+    outlook.add_argument(
+        "--horizon-days", type=int, default=None,
+        help="the projection window in days (default: the authored 14)",
+    )
 
     sub.add_parser("metrics", help="summarise the stored runs")
 
@@ -247,6 +257,9 @@ def main(argv: list[str] | None = None) -> int:
                     f"{obligation.interval_days} days, next due {obligation.next_due_at} "
                     f"(clock from {obligation.clock_basis})"
                 )
+        elif args.command == "outlook":
+            outlook = service.parts_outlook(horizon_days=args.horizon_days)
+            print(outlook_module.render_text(outlook), end="")
         elif args.command == "metrics":
             print(json.dumps(service.metrics(), indent=1))
     except (KeyError, ValueError) as exc:

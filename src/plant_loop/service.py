@@ -46,6 +46,7 @@ from . import economics as economics_module
 from . import handoff as handoff_module
 from . import history as history_module
 from . import lifecycle as lifecycle_module
+from . import outlook as outlook_module
 from . import packet as packet_module
 from . import stats as stats_module
 from .allocation import AllocationLedger
@@ -63,6 +64,7 @@ from .schemas import (
     CaseResult,
     ExceptionCase,
     MachineRecord,
+    PartsOutlook,
     PmObligation,
     PmProposal,
     SupervisorOutcome,
@@ -542,6 +544,23 @@ class PlantService:
         """The allocation ledger as it stands: every claim ever
         recorded on this store, standing and released alike."""
         return [claim.model_dump() for claim in self.allocation.all_claims()]
+
+    def parts_outlook(
+        self, horizon_days: int | None = None, *, now: datetime | None = None
+    ) -> PartsOutlook:
+        """The parts outlook (outlook.py): projected demand against
+        the shelf over the horizon — standing claims, open cases'
+        unsatisfied plan requirements, and PM cycles falling due.
+        A pure projection: it reads the store and writes nothing."""
+        return outlook_module.build_outlook(
+            self.store,
+            now=now,
+            horizon_days=(
+                horizon_days
+                if horizon_days is not None
+                else outlook_module.DEFAULT_HORIZON_DAYS
+            ),
+        )
 
     def board_items(self) -> list[BoardItem]:
         return self.store.all_board_items()

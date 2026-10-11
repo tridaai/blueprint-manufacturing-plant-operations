@@ -114,6 +114,7 @@
       <div id="allocations"></div>
       <div id="pm"></div>
       <div id="machines"></div>
+      <div id="outlook"></div>
       <h3>Shift handoff</h3>
       <p class="note">The board as it stands, written for the next shift — composed in code from the records, never by a model.</p>
       <div class="row" style="margin:10px 0">
@@ -387,6 +388,7 @@ async function loadBoard() {
     loadAllocations();
     loadPm();
     loadMachines();
+    loadOutlook();
   } catch (err) {
     $("board").innerHTML = `<span class="empty">error: ${esc(err.message)}</span>`;
   }
@@ -577,6 +579,31 @@ async function loadPm() {
     document.querySelectorAll("[data-pm-reject]").forEach((btn) => btn.addEventListener("click", () => pmDecide(btn.dataset.pmReject, "rejected")));
     document.querySelectorAll("[data-pm-retire]").forEach((btn) => btn.addEventListener("click", () => pmRetire(btn.dataset.pmRetire)));
   } catch (err) { /* the PM panel is additive; the board still renders */ }
+}
+
+async function loadOutlook() {
+  try {
+    const outlook = await call("/api/parts/outlook");
+    if (!outlook.parts.length && !outlook.unquantified_pm.length) { $("outlook").innerHTML = ""; return; }
+    let html = `<h3>Parts outlook — the next ${outlook.horizon_days} days</h3><p class="note">Projected demand against the shelf, computed in code from the records: standing claims, open cases' unsatisfied plan requirements, and PM cycles falling due inside the horizon — every unit traced to its source. A read model: it creates no cases, claims or orders.</p>`;
+    if (outlook.shortages.length) {
+      html += outlook.shortages.map((p) =>
+        `<div class="banner bad">${esc(p.part_id)} — SHORT ${p.shortfall} · projected ${p.projected_demand} against ${p.stocked ? p.on_hand : 0} on hand · bites ${esc(p.bites_at)} · ${esc(p.bites_note)}<br>` +
+        p.lines.map((l) => `<span class="note">${esc(l.source_kind)} x${l.qty} — ${esc(l.detail)}</span>`).join("<br>") + `</div>`
+      ).join("");
+    } else {
+      html += `<p class="note">No shortages — projected demand inside the horizon is covered by the shelf.</p>`;
+    }
+    const covered = outlook.parts.filter((p) => !p.shortage_risk);
+    if (covered.length) {
+      html += `<table><tr><th>Part</th><th>On hand</th><th>Claimed</th><th>Open plans</th><th>PM cycles</th><th>Projected</th></tr>` +
+        covered.map((p) => `<tr><td>${esc(p.part_id)}</td><td>${p.stocked ? p.on_hand : "not stocked"}</td><td>${p.claimed_qty}</td><td>${p.case_demand_qty}</td><td>${p.pm_demand_qty}</td><td>${p.projected_demand}</td></tr>`).join("") + `</table>`;
+    }
+    for (const u of outlook.unquantified_pm) {
+      html += `<p class="note">Unquantified: PM cycle of ${esc(u.obligation_id)} (${esc(u.machine_id)} · ${esc(u.fault_class)}, due ${esc(u.next_due_at)}) — ${esc(u.reason)}.</p>`;
+    }
+    $("outlook").innerHTML = html;
+  } catch (err) { /* the outlook panel is additive; the board still renders */ }
 }
 
 async function pmRetire(obligationId) {

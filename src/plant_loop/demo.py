@@ -102,6 +102,31 @@ def print_board(service: PlantService, cases, result) -> None:
     )
 
 
+def print_outlook(service: PlantService) -> None:
+    outlook = service.parts_outlook()
+    print()
+    print(
+        f"[OUTLOOK] projected parts demand over the next "
+        f"{outlook.horizon_days} days (claims standing, open plans, PM cycles due):"
+    )
+    if outlook.shortages:
+        for part in outlook.shortages:
+            print(
+                f"  SHORT {part.shortfall} × {part.part_id} — projected "
+                f"{part.projected_demand} against "
+                f"{part.on_hand if part.stocked else 0} on hand · "
+                f"bites {part.bites_at} · {part.bites_note}"
+            )
+    else:
+        print("  no shortages — projected demand inside the horizon is covered by the shelf")
+    for part in outlook.parts:
+        if not part.shortage_risk and part.projected_demand:
+            print(
+                f"  covered: {part.part_id} — projected {part.projected_demand} "
+                f"against {part.on_hand if part.stocked else 0} on hand"
+            )
+
+
 def print_spotlight(service: PlantService) -> None:
     record = service.get_record(SPOTLIGHT)
     if record is None:
@@ -148,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[BOARD] {len(cases)} cases on the shift board. Working the board…")
     result = service.run_board(cases, sink=PrintingSink())
     print_board(service, cases, result)
+    print_outlook(service)
     print_spotlight(service)
     if args.decision:
         record = service.record_decision(SPOTLIGHT, args.decision, by="demo supervisor")

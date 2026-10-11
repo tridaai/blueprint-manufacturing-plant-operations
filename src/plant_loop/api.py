@@ -35,6 +35,13 @@ every route delegates, none re-implements. Notable behaviour:
   unverified plan must not reach the floor as a work order;
 - ``GET /api/board/items`` lists the non-case board items (the
   reliability reviews the watch raises);
+- ``GET /api/parts/outlook`` projects part demand against the
+  shelf over a horizon (outlook.py): standing claims, open
+  cases' unsatisfied plan requirements, and PM cycles falling
+  due, each traced to its source record, with the shortage rows
+  and the moment each shortfall bites. ``?horizon_days=`` widens
+  or narrows the window (the authored default is 14). A pure
+  read — it creates nothing and orders nothing;
 - ``GET /api/pm/proposals`` / ``GET /api/pm/obligations`` list the
   preventive-maintenance layer (pm.py): proposals the watch's
   pattern earned — evidence and interval arithmetic on the record —
@@ -77,6 +84,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import __version__, kb
+from . import outlook as outlook_module
 from .config import env_str, load_dotenv
 from .errors import ProviderError
 from .loops import BoardPolicy
@@ -532,6 +540,19 @@ def allocations():
     an approval leaves them standing.
     """
     return get_service().allocations()
+
+
+@app.get("/api/parts/outlook")
+def parts_outlook(horizon_days: int = outlook_module.DEFAULT_HORIZON_DAYS):
+    """The parts outlook (outlook.py): projected demand against the
+    shelf over the horizon — every unit traced to the claim, case
+    plan or PM cycle that will draw it, the shortage rows named
+    with the moment each shortfall bites."""
+    if horizon_days < 1:
+        raise HTTPException(
+            status_code=422, detail="horizon_days must be at least 1"
+        )
+    return get_service().parts_outlook(horizon_days=horizon_days).model_dump()
 
 
 @app.get("/api/pm/proposals")

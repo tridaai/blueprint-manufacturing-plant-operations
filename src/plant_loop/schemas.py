@@ -529,6 +529,77 @@ class BoardEconomics(BaseModel):
     largest_exposure_usd: float | None = None
 
 
+class PartDemandLine(BaseModel):
+    """One traced line of projected part demand (outlook.py).
+
+    Every projected unit names where it comes from — a standing
+    claim, an open case's verified plan, or a standing PM
+    obligation's next due cycle — because a projection a supervisor
+    cannot trace back to a record is a guess wearing a table's
+    clothes. ``date`` is the line's own record date: the claim's
+    stamp, the case's creation, the cycle's due point.
+    """
+
+    part_id: str
+    qty: int = 0
+    source_kind: str = ""  # claim | case_plan | pm_cycle
+    source_id: str = ""  # the case id, or the obligation id
+    date: str = ""  # the line's own record timestamp
+    detail: str = ""
+
+
+class PartOutlook(BaseModel):
+    """One part's projected position inside the outlook horizon.
+
+    Projected demand is the sum of the traced lines: standing
+    claims (already committed), open cases' unsatisfied plan
+    requirements (still to draw), and PM cycles falling due inside
+    the horizon (dated). ``shortfall`` is what the shelf cannot
+    cover; a part at exactly zero shortfall is covered, not at
+    risk — the boundary is the plant's own arithmetic, not a
+    rounding mood. ``bites_at`` is the first moment cumulative
+    demand passes the shelf: the projection moment itself when the
+    book is already short, else the due date of the PM cycle that
+    tips it over.
+    """
+
+    part_id: str
+    part_name: str = ""
+    stocked: bool = True  # False: the plant model stocks no such part
+    on_hand: int | None = None  # the authored shelf qty (None: not stocked)
+    claimed_qty: int = 0
+    case_demand_qty: int = 0
+    pm_demand_qty: int = 0
+    projected_demand: int = 0
+    shortfall: int = 0
+    shortage_risk: bool = False
+    bites_at: str = ""  # "" when there is no shortfall
+    bites_note: str = ""  # what tips it over, in words
+    lines: list[PartDemandLine] = Field(default_factory=list)
+
+
+class PartsOutlook(BaseModel):
+    """The board looking ahead: projected demand against the shelf.
+
+    A pure read model over the store plus the plant model
+    (outlook.py): it creates no cases, places no claims and orders
+    nothing. ``unquantified_pm`` names the standing obligations
+    due inside the horizon whose machine + fault class has no SOP
+    on record — their cycles' parts cannot be projected, and the
+    outlook says so rather than inventing quantities. (An SOP that
+    names no parts is not unquantified: it was consulted, and it
+    names none.)
+    """
+
+    as_of: str = ""
+    horizon_days: int = 0
+    horizon_end: str = ""
+    basis: str = ""
+    parts: list[PartOutlook] = Field(default_factory=list)
+    shortages: list[PartOutlook] = Field(default_factory=list)
+    unquantified_pm: list[dict] = Field(default_factory=list)
+
+
 class TraceStep(BaseModel):
     name: str
     title: str
