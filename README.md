@@ -35,8 +35,8 @@ cp .env.example .env        # optional — everything has an offline default
 
 make demo                   # work the bundled 9-case board, narrated
 make serve                  # console + API on http://localhost:8000
-make test                   # 98 tests (+2 Postgres-gated, skipped without a DB)
-make evals                  # golden loop eval: 28/28 must pass the gate
+make test                   # 116 tests (+2 Postgres-gated, skipped without a DB)
+make evals                  # golden loop eval: 30/30 must pass the gate
 ```
 
 Or the production topology, which is the same shape a cloud deployment takes:
@@ -78,22 +78,24 @@ Every round call is validated against a strict schema with one bounded retry; a 
 
 ## Evals
 
-`make evals` runs the golden loop pack — 28 authored entries against the offline backend, hermetic and deterministic:
+`make evals` runs the golden loop pack — 30 authored entries against the offline backend, hermetic and deterministic:
 
 - **20 case cases**: expected diagnosis class, exit reason, rounds used, draft kind, and verify-stage substitution records — including the two-round convergence (a bearing fault the first round can't yet separate from a tool imbalance, separated by a discriminating check in round 2), the round-0 safety stop, the skip-lockout injection, a substitute that converges (twice: a coolant filter, a packaging film), a substitute rejected on its rating that still escalates with the reason on record, and an honest `exhausted` for a fault with no SOP.
 - **3 defect cases**: deliberately defective planners — one drops safety steps, one names an unstocked part, one proposes bypassing an interlock — and the verify round must catch each (never converge, blocked, safety stop respectively). This is gap-recall, tested against the failure modes the loop exists for.
 - **3 board cases**: the seeded board drains in the exact priority order; a case budget of 3 and a token budget both cut the run at the right place and hand over the right remainder.
 - **2 outcome cases**: cases run end to end, supervisor outcomes are recorded against them, and the harness asserts the live-accuracy stats and the recurring-fault watch — including a partial outcome (disposition only) and a confirmation that reclassifies a case out of its diagnosed pattern.
+- **2 learning cases**: a case runs, a supervisor outcome is recorded, and a similar case runs against the *same* store — the confirmation written back to the machine's history is the only difference between the two halves. In one, an ambiguous CNC-3 vibration case exhausts at 3 rounds un-learned, then converges in 2 once the bearing fault stands confirmed on that machine; in the other, an outcome that confirms nothing is recorded and the follow-up behaves exactly as the baseline — the guard case proving the write-back, not the outcome ritual, is what teaches.
 
-Gate: ≥95% overall. Current: **28/28**. Plus 98 pytest tests — loop-controller units with scripted critiques (converge r1/r2, exhaust, budget, safety), the verify-stage substitution branches (applied, rejected on rating, none listed, a planner's unverified substitute claim stripped), the work-order packet contents and its refusals, the Muse adapters against stubbed transports (request shaping + reasoning continuity), guardrails, priority, the service and API, and hand-computed fixtures for the outcome stats, the handoff and the watch — with 2 Postgres-gated tests that skip without a database.
+Gate: ≥95% overall. Current: **30/30**. Plus 116 pytest tests — loop-controller units with scripted critiques (converge r1/r2, exhaust, budget, safety), the verify-stage substitution branches (applied, rejected on rating, none listed, a planner's unverified substitute claim stripped), the work-order packet contents and its refusals, the confirmed-fault write-back (per-decision behaviour, idempotency, the safety-stop refusal, the merged history's markings), the Muse adapters against stubbed transports (request shaping + reasoning continuity), guardrails, priority, the service and API, and hand-computed fixtures for the outcome stats, the learning-loop stats, the handoff and the watch — with 2 Postgres-gated tests that skip without a database.
 
 ## Closing the loop: outcomes
 
 A gate decision says a draft may proceed. It does not say the draft was *right*. So the record stays open for what happened next, and the loop is measured against it:
 
 - **Outcome capture** — `POST /api/cases/{id}/outcome` (and the form on the case detail in the console): the supervisor records the plan's disposition (`accepted` / `accepted_with_changes` / `rejected`), the **confirmed fault** from the same vocabulary the diagnoses speak, the work performed, the actual downtime, the parts used, and whether the case resolved. Validation is strict — an unknown fault class is a 422, because ground truth with a typo in it poisons every number downstream. Partial outcomes count for what they recorded.
-- **Live diagnosis accuracy** — `GET /api/stats/diagnosis`: top-1/top-2 accuracy of the diagnosis against confirmed faults, per-fault-class precision/recall with their counts, mean rounds-to-converge for confirmed cases, plan-acceptance rates, and estimated-vs-actual downtime error. Pure aggregation over the records, identical over both stores; with no outcomes yet it says so instead of printing zeroes.
-- **Shift handoff** — `GET /api/board/handoff` (add `?format=text` for the shift-log text): cases at the gate, escalations with their open gaps, blocked-external cases with the part they're waiting on, safety stops, open reliability items, and the last board run — including what a budget cut left unworked. Every fact is composed in code from the records; no model writes any of it.
+- **The plant remembers** — a confirmed fault is written back to the machine's history, where the next diagnosis reads it. The write-back is a store record of its own (migration `0004`), never an edit to the packaged KB: the KB's seeded history stays immutable *recorded* history, and every written-back entry is marked `supervisor_confirmed` with the case that confirmed it — the two kinds are never confused. Only a confirmed fault writes (any disposition counts — the fault the floor found is ground truth even when the plan was refused; an outcome confirming nothing writes nothing), one entry per case, ever. A safety stop refuses a confirmed fault outright, before anything persists: a safety case has no diagnosis to confirm. The diagnose context carries the machine's merged history — confirmed entries first, sources marked — so the offline signals cite a confirmation as the floor's own finding, the model backends see it in their context marked the same way, and when the readings cannot separate two fault classes, a supervisor-confirmed precedent for the leader is the discriminating fact that separates them. Recorded history alone never separates anything; it is cited as evidence, nothing more.
+- **Live diagnosis accuracy** — `GET /api/stats/diagnosis`: top-1/top-2 accuracy of the diagnosis against confirmed faults, per-fault-class precision/recall with their counts, mean rounds-to-converge for confirmed cases, plan-acceptance rates, and estimated-vs-actual downtime error. Pure aggregation over the records, identical over both stores; with no outcomes yet it says so instead of printing zeroes. A **learning-loop section** reports the write-backs (confirmed faults, by machine) and repeat-fault performance — the top-1 rate on cases whose machine + fault a supervisor had already confirmed, set beside the overall top-1 rate, both as plain counts; when there are no repeat cases yet it says so.
+- **Shift handoff** — `GET /api/board/handoff` (add `?format=text` for the shift-log text): cases at the gate, escalations with their open gaps, blocked-external cases with the part they're waiting on, safety stops, open reliability items, the faults supervisors have confirmed into the machines' history, and the last board run — including what a budget cut left unworked. Every fact is composed in code from the records; no model writes any of it.
 - **Recurring-fault watch** — when a case reaches the gate, or an outcome confirms a fault, a code-side watch counts the same machine + fault class inside a rolling window (default: 3 in 14 days, `RELIABILITY_THRESHOLD` / `RELIABILITY_WINDOW_DAYS`). At the threshold it raises **one** `reliability_review` item on the board, carrying the contributing cases as evidence. Fixing the same bearing three times in a fortnight is a reliability problem, not three maintenance jobs — the item says so, and then does nothing else: it triggers no automatic action and waits at the supervisor gate like everything else.
 
 ## Parts reality: substitutions and the floor packet
@@ -122,6 +124,7 @@ src/plant_loop/
   guardrails.py   verify-round code checks + draft language screen
   screening.py    injection screen + banned-action screen for floor text and plan steps
   kb.py           the synthetic plant KB (SOPs, history, inventory) + retriever
+  history.py      the plant's memory: confirmed-fault write-backs + the merged history view
   substitution.py the verify stage's substitute search: shelf truth, KB relation, SOP constraints
   drafts.py       work-order / escalation draft builders (deterministic, gate-noticed)
   packet.py       the work-order packet for the floor, composed in code (JSON + text)
@@ -132,8 +135,8 @@ src/plant_loop/
   service.py      runs the graphs, owns persistence and the gate
   api.py          FastAPI transport + the single-file console
   data/           kb.json, sample_cases.json (the seeded board), eval_results.json
-migrations/       numbered SQL (records, board runs, errors, pgvector KB index, board items)
-evals/            golden.jsonl (28 entries) + run_evals.py (the gate)
+migrations/       numbered SQL (records, board runs, errors, pgvector KB index, board items, history entries)
+evals/            golden.jsonl (30 entries) + run_evals.py (the gate)
 tests/            pytest suite
 ```
 
