@@ -1,6 +1,6 @@
 """Golden loop eval: known cases in, loop behaviour checked.
 
-Forty-two entries — twenty cases with authored expectations
+Forty-three entries — twenty cases with authored expectations
 (per-case diagnosis class, exit reason, rounds used, draft kind,
 open gaps, verify-stage substitution records), three *defect* cases
 (a deliberately defective planner that drops safety steps, names an
@@ -45,7 +45,18 @@ to end: the offline baseline and the shipped stub candidate drive
 the fixed suite — this pack's own case entries — and the
 comparison must PASS with exactly the stub's two deliberate
 differences showing, one diagnosis difference and one extra round,
-and no safety-pin violation on either record). Every case
+and no safety-pin violation on either record), and one
+*retirement* entry (machines and obligations end: two obligations
+are earned the honest way — cases, a drafted proposal, an
+approval — one is retired by hand with its own reason and a board
+past its due point stays silent, the other's machine is
+decommissioned and its obligation retires automatically with the
+fixed reason and the decommission linked; the machine's open
+cases are disposed differently — one closed as moot with its
+claims released, one kept and worked through the gate, a safety
+case kept and still a safety stop — new intake for the dead
+machine is refused with the state named, and the handoff carries
+both retirements with their reasons). Every case
 runs the full pipeline through a fresh service on the
 deterministic offline backend, so the gate is hermetic:
 ``uv run python evals/run_evals.py`` exits non-zero below the gate.
@@ -712,6 +723,154 @@ def run_pm_entry(entry: dict) -> list[str]:
     return failures
 
 
+def run_retirement_entry(entry: dict) -> list[str]:
+    """Retirement and decommission, end to end (lifecycle.py).
+
+    Both obligations are earned the honest way — cases run, the
+    watch drafts, a supervisor approves. One is then retired by
+    hand, with its own reason, and a board run past its due point
+    must stay silent. The other's machine is decommissioned: the
+    obligation retires automatically (fixed reason, decommission
+    linked), the machine's open cases are listed on the record
+    and disposed one by one — one closed as moot (its claims
+    released), one kept and still worked through the gate, a
+    safety case kept and still a safety stop — new intake for
+    the dead machine is refused with the state named, and the
+    handoff's PM section carries both endings truthfully.
+    """
+    from plant_loop.handoff import build_handoff
+
+    spec = entry["retirement"]
+    expected = entry["expected"]
+    failures: list[str] = []
+    service = fresh_service()
+
+    def check(key: str, actual) -> None:
+        if key not in expected:
+            failures.append(f"check {key}: not in expected")
+        elif actual != expected[key]:
+            failures.append(f"check {key}: expected {expected[key]!r}, got {actual!r}")
+
+    def proposal_for(machine_id: str, fault_class: str):
+        for proposal in service.pm_proposals():
+            if (
+                proposal.machine_id == machine_id
+                and proposal.fault_class == fault_class
+                and proposal.status == "proposed"
+            ):
+                return proposal
+        return None
+
+    def approve(machine_id: str, fault_class: str, decision_spec: dict):
+        proposal = proposal_for(machine_id, fault_class)
+        if proposal is None:
+            failures.append(f"proposal for {machine_id}/{fault_class}: none drafted")
+            return None
+        _proposal, obligation = service.decide_pm_proposal(
+            proposal.proposal_id,
+            "approved",
+            by=decision_spec["by"],
+            interval_days=decision_spec["interval_days"],
+            last_performed_at=decision_spec["last_performed_at"],
+        )
+        if obligation is None:
+            failures.append(f"obligation for {machine_id}: approval created none")
+        return obligation
+
+    # WELD-4: earn the obligation, retire it by hand, board silent.
+    for payload in spec["weld_cases"]:
+        service.run_case(ExceptionCase.model_validate(payload))
+    weld_obligation = approve("WELD-4", "weld_quality_drift", spec["weld_decision"])
+    if weld_obligation is None:
+        return failures
+    service.retire_pm_obligation(
+        weld_obligation.obligation_id,
+        by=spec["manual_retirement"]["by"],
+        reason=spec["manual_retirement"]["reason"],
+    )
+    board = service.run_board([])
+    check("board_pm_cases_after_retire", len(board.pm_cases))
+
+    # CNC-3: earn the obligation, then open the cases the
+    # decommission will find on the board.
+    for payload in spec["cnc_cases"]:
+        service.run_case(ExceptionCase.model_validate(payload))
+    cnc_obligation = approve("CNC-3", "spindle_bearing_wear", spec["cnc_decision"])
+    if cnc_obligation is None:
+        return failures
+    for payload in spec["open_cases"]:
+        service.run_case(ExceptionCase.model_validate(payload))
+
+    dec = spec["decommission"]
+    record = service.decommission_machine(
+        dec["machine_id"],
+        by=dec["by"],
+        reason=dec["reason"],
+        effective_at=dec["effective_at"],
+    )
+    check("open_cases_at_decommission", sorted(record.open_case_ids))
+    cnc_after = next(
+        o for o in service.pm_obligations() if o.obligation_id == cnc_obligation.obligation_id
+    )
+    check("cnc_obligation_status", cnc_after.status)
+    check("cnc_retirement_kind", cnc_after.retirement_kind)
+    check("cnc_retirement_reason", cnc_after.retirement_reason)
+    check("cnc_decommission_link", cnc_after.decommission_id == record.record_id)
+
+    for disposition in spec["dispositions"]:
+        service.dispose_machine_case(
+            dec["machine_id"],
+            disposition["case_id"],
+            disposition["disposition"],
+            by=disposition["by"],
+        )
+    check("moot_case_status", service.get_record(spec["moot_case"]).status)
+    moot_claims = service.allocation.claims_for_case(spec["moot_case"])
+    check(
+        "moot_claims_released",
+        bool(moot_claims) and all(c.status == "released" for c in moot_claims),
+    )
+    safety = service.get_record(spec["safety_case"])
+    check("kept_safety_status", safety.status)
+    check("kept_safety_exit", safety.exit_reason)
+
+    # The kept case is still worked: decision and outcome land,
+    # and the outcome drafts no new proposal for a dead machine.
+    work = spec["work_kept_case"]
+    service.record_decision(work["case_id"], "approved", by=work["by"])
+    worked = service.record_outcome(
+        work["case_id"],
+        SupervisorOutcome(
+            decision="accepted",
+            confirmed_fault=work["confirmed_fault"],
+            work_performed=work["work_performed"],
+            recorded_at=work["recorded_at"],
+        ),
+    )
+    check("kept_case_outcome", worked.outcome.decision if worked.outcome else None)
+    check(
+        "cnc_proposals_after_outcome",
+        len([p for p in service.pm_proposals() if p.machine_id == "CNC-3"]),
+    )
+
+    intake_error = ""
+    try:
+        service.run_case(ExceptionCase.model_validate(spec["intake_case"]))
+    except ValueError as exc:
+        intake_error = str(exc)
+    check("intake_refused", "DECOMMISSIONED" in intake_error)
+
+    final_board = service.run_board([])
+    check("final_board_pm_cases", len(final_board.pm_cases))
+
+    handoff = build_handoff(service.store)
+    check(
+        "handoff_retired",
+        sorted([r["machine_id"], r["retirement_reason"]] for r in handoff["pm"]["retired"]),
+    )
+    return failures
+
+
 def run_gate_entry(entry: dict) -> list[str]:
     """The reasoner regression gate, exercised end to end.
 
@@ -777,6 +936,8 @@ def main() -> int:
             failures = run_carryover_entry(entry)
         elif entry["kind"] == "pm":
             failures = run_pm_entry(entry)
+        elif entry["kind"] == "retirement":
+            failures = run_retirement_entry(entry)
         elif entry["kind"] == "gate":
             failures = run_gate_entry(entry)
         else:

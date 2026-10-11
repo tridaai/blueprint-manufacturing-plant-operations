@@ -49,6 +49,27 @@ def test_postgres_store_roundtrip(pg_url):
     assert store.metrics()["cases"] >= 1
 
 
+def test_postgres_machine_record_roundtrip(pg_url):
+    from plant_loop.lifecycle import MachineLifecycle
+    from plant_loop.loops import ReliabilityPolicy
+    from plant_loop.pm import PmManager
+    from plant_loop.reliability import ReliabilityWatch
+    from plant_loop.store import PostgresStore
+
+    store = PostgresStore(pg_url)
+    lifecycle = MachineLifecycle(
+        store, PmManager(store, ReliabilityWatch(store, ReliabilityPolicy()))
+    )
+    record = lifecycle.decommission(
+        "COMP-7", by="PG test", reason="Air contract ended.",
+    )
+    fetched = store.get_machine_record("COMP-7")
+    assert fetched is not None
+    assert fetched.record_id == record.record_id
+    assert fetched.reason == "Air contract ended."
+    assert any(r.machine_id == "COMP-7" for r in store.all_machine_records())
+
+
 def test_postgres_checkpointer_pauses_and_resumes(pg_url, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", pg_url)
     from plant_loop.checkpoints import default_checkpointer
