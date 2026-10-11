@@ -1,0 +1,166 @@
+{
+ "total": 26,
+ "passed": 26,
+ "rate": 1.0,
+ "gate": 0.95,
+ "gate_passed": true,
+ "backend": "offline",
+ "results": [
+  {
+   "id": "G01",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G02",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G03",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G04",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G05",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G06",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G07",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G08",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G09",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G10",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G11",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G12",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G13",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G14",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G15",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G16",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G17",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G18",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G19",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G20",
+   "kind": "case",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G21",
+   "kind": "defect",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G22",
+   "kind": "defect",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G23",
+   "kind": "defect",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G24",
+   "kind": "board",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G25",
+   "kind": "board",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "G26",
+   "kind": "board",
+   "passed": true,
+   "failures": []
+  }
+ ]
+}
