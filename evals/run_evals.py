@@ -1,6 +1,6 @@
 """Golden loop eval: known cases in, loop behaviour checked.
 
-Thirty entries — twenty cases with authored expectations
+Thirty-two entries — twenty cases with authored expectations
 (per-case diagnosis class, exit reason, rounds used, draft kind,
 open gaps, verify-stage substitution records), three *defect* cases
 (a deliberately defective planner that drops safety steps, names an
@@ -8,14 +8,20 @@ unstocked part, and proposes a banned action), three board cases
 (priority order, case budget, token budget), two *outcome*
 entries (cases run end to end, supervisor outcomes recorded, the
 live-accuracy stats and the recurring-fault watch asserted — the
-outcome loop measuring itself), and two *learning* entries (a case
+outcome loop measuring itself), two *learning* entries (a case
 run, a supervisor outcome recorded, a similar case run against the
 SAME store — the confirmation written back to the machine's
 history is the only difference between the two halves: one entry
 proves the loop closes on what the plant learned, the other proves
-an outcome that confirms nothing teaches nothing). Every case runs
-the full pipeline through a fresh service on the deterministic
-offline backend, so the gate is hermetic:
+an outcome that confirms nothing teaches nothing), and two
+*allocation* entries (the board sharing one shelf: two cases want
+the shelf's only belt — the higher-priority case converges and
+claims it, the lower blocks with the claim named; the supervisor
+rejects the winner at the gate, the claim is released, and a fresh
+run lets the lower case converge — while a lone case with no
+contention claims its substitute and behaves exactly as before).
+Every case runs the full pipeline through a fresh service on the
+deterministic offline backend, so the gate is hermetic:
 ``uv run python evals/run_evals.py`` exits non-zero below the gate.
 
 These expectations encode the intended behaviour of the loops as
@@ -279,6 +285,107 @@ def run_learning_entry(entry: dict) -> list[str]:
     return failures
 
 
+def run_allocation_entry(entry: dict) -> list[str]:
+    """Board-level parts allocation, proven on the seeded shelf.
+
+    Two shapes. A *board* entry runs its cases in one run and
+    asserts the exits, the claims the run recorded, and the claim
+    named in the blocked case's gap; when it names a ``reject_case``
+    the gate rejection must release that case's claim (stamped
+    ``released_by_gate_rejection``) without rewriting the finished
+    run's records, and its ``followup_case`` — run as a FRESH board
+    run — must take the freed part. A *single-case* entry runs one
+    case alone: no contention, so the exit and rounds are the
+    pre-allocation behaviour, with the claim recorded on top.
+    """
+    service = fresh_service()
+    expected = entry["expected"]
+    failures: list[str] = []
+
+    def _claims_mismatch(got, want, label):
+        got_sorted = sorted((c.part_id, c.case_id, c.status) for c in got)
+        want_sorted = sorted(tuple(w) for w in want)
+        if got_sorted != want_sorted:
+            return [f"{label}: expected {want_sorted}, got {got_sorted}"]
+        return []
+
+    if "single_case" in entry:
+        case = ExceptionCase.model_validate(entry["single_case"])
+        result = service.run_case(case).result
+        if result.exit_reason != expected["exit"]:
+            failures.append(f"exit: expected {expected['exit']}, got {result.exit_reason}")
+        if len(result.rounds) != expected["rounds"]:
+            failures.append(
+                f"rounds: expected {expected['rounds']}, got {len(result.rounds)}"
+            )
+        failures += _claims_mismatch(
+            service.allocation.all_claims(), expected.get("claims", []), "claims"
+        )
+        if "claim_original_part" in expected:
+            claims = service.allocation.all_claims()
+            if not claims or claims[0].original_part_id != expected["claim_original_part"]:
+                failures.append(
+                    "claims: expected the claim to record the requirement it "
+                    f"satisfies ({expected['claim_original_part']})"
+                )
+        return failures
+
+    cases = [ExceptionCase.model_validate(c) for c in entry["cases"]]
+    result = service.run_board(cases)
+    for case_id, exit_reason in expected.get("exits", {}).items():
+        if result.exits.get(case_id) != exit_reason:
+            failures.append(
+                f"exit[{case_id}]: expected {exit_reason}, got {result.exits.get(case_id)}"
+            )
+    failures += _claims_mismatch(result.allocations, expected.get("claims", []), "run claims")
+    blocked_id = expected.get("blocked_case", "")
+    if blocked_id:
+        record = service.store.get_case(blocked_id)
+        phrase = expected.get("gap_claim_phrase", "")
+        if not any(phrase in gap.detail for gap in record.open_gaps):
+            failures.append(
+                f"gap[{blocked_id}]: expected the claim named ({phrase!r}), "
+                f"got {[g.detail for g in record.open_gaps]}"
+            )
+    reject_id = entry.get("reject_case", "")
+    if reject_id:
+        service.record_decision(
+            reject_id, "rejected", by="Eval Supervisor", reason="eval: gate release"
+        )
+        claims = service.allocation.claims_for_case(reject_id)
+        if len(claims) != 1 or claims[0].status != expected.get(
+            "claim_after_reject", "released"
+        ):
+            failures.append(
+                f"release: expected {reject_id}'s claim released, got "
+                f"{[(c.part_id, c.status) for c in claims]}"
+            )
+        elif claims[0].release_reason != "released_by_gate_rejection":
+            failures.append(
+                f"release: expected the released_by_gate_rejection stamp, "
+                f"got {claims[0].release_reason!r}"
+            )
+        if blocked_id:
+            record = service.store.get_case(blocked_id)
+            if record.exit_reason != "blocked_external":
+                failures.append(
+                    "release rewrote the finished run: the blocked case's "
+                    f"record changed to {record.exit_reason}"
+                )
+    if "followup_case" in entry:
+        follow = ExceptionCase.model_validate(entry["followup_case"])
+        fresh = service.run_board([follow])
+        if fresh.exits.get(follow.case_id) != expected.get("followup_exit"):
+            failures.append(
+                f"followup exit: expected {expected.get('followup_exit')}, "
+                f"got {fresh.exits.get(follow.case_id)}"
+            )
+        failures += _claims_mismatch(
+            fresh.allocations, expected.get("followup_claims", []), "followup claims"
+        )
+    return failures
+
+
 def main() -> int:
     entries = load_cases()
     results = []
@@ -290,6 +397,8 @@ def main() -> int:
             failures = run_outcome_entry(entry)
         elif entry["kind"] == "learning":
             failures = run_learning_entry(entry)
+        elif entry["kind"] == "allocation":
+            failures = run_allocation_entry(entry)
         else:
             failures = run_case_entry(entry)
         ok = not failures

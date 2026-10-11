@@ -108,7 +108,9 @@ def test_packet_flags_the_substitution_in_json_and_text():
 def test_packet_text_is_rendered_from_the_same_dict():
     service = make_service()
     record = _run(service, "EXC-101")
-    payload = build_packet(record)
+    # The service packet carries the case's allocation claims
+    # (round 5); build from the same claims and the text must match.
+    payload = build_packet(record, claims=service.allocation.claims_for_case("EXC-101"))
     assert render_text(payload) == service.case_packet("EXC-101")["text"]
 
 
