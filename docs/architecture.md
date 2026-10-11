@@ -32,6 +32,10 @@ A shift's exceptions live on a board. Two nested loops work that board, and both
               │                                 │ gaps, rounds left,
               │        focus = open gaps only   │ budget left
               └─────────────────────────────────┘
+                    verify's parts pass runs in code inside the
+                    verify stage: shelf truth → KB substitute search
+                    → replan around a passing substitute, or the
+                    search is documented and the case blocks
                                                 │ exit decided in code
                                                 ▼
                               draft (work order | escalation) ─► SUPERVISOR GATE ─► record
@@ -42,8 +46,12 @@ A shift's exceptions live on a board. Two nested loops work that board, and both
 Each pass is three calls behind the `Reasoner` port (`ports.py`), each returning a strict schema (`schemas.py`), each validated in code with one bounded retry:
 
 1. **Diagnose** → `Diagnosis`: ranked `Hypothesis` list. Contract: every hypothesis carries `evidence` (SOP clause, history match, or reading) and a `confidence`. Retrieval over the KB (SOPs + history, behind the `Retriever` port) is scoped by machine before the call.
-2. **Plan** → `ActionPlan`: ordered `PlanStep`s built on the leading hypothesis's SOP, `required_parts` resolved against inventory (stock, or an approved substitute), estimated downtime. The SOP's mandatory safety steps are inserted by the planner as steps with `kind="safety"`, `mandatory=True` — and the verify round treats their absence as a blocking safety gap, so "the model forgot the lockout" cannot converge.
-3. **Verify** → `Critique` (the model's own second look) **merged with code checks** (`guardrails.verify_plan`): `missing_safety_step`, `part_unavailable`, `unevidenced_hypothesis`, `sop_contradiction`, `banned_action`. Merge rule: code gaps win — where both flag the same `(kind, ref)`, the code version is kept; the model's critique can add gaps, never remove a code gap.
+2. **Plan** → `ActionPlan`: ordered `PlanStep`s built on the leading hypothesis's SOP, `required_parts` named from the SOP, estimated downtime. The SOP's mandatory safety steps are inserted by the planner as steps with `kind="safety"`, `mandatory=True` — and the verify round treats their absence as a blocking safety gap, so "the model forgot the lockout" cannot converge. Parts are deliberately *not* resolved here: a planner's stock claims (including any substitute it names) are treated as unverified claims, and the verify stage re-measures them.
+3. **Verify** → `Critique` (the model's own second look) **merged with code checks** (`guardrails.verify_plan`): `missing_safety_step`, `part_unavailable`, `unevidenced_hypothesis`, `sop_contradiction`, `banned_action`. Merge rule: code gaps win — where both flag the same `(kind, ref)`, the code version is kept; the model's critique can add gaps, never remove a code gap. First, though, the verify stage runs its **parts pass in code** (`substitution.py`):
+
+   - **Shelf truth.** Every requirement is re-measured against inventory — `available_qty` and `satisfied` come from the shelf, never from the planner.
+   - **The search.** For a requirement the shelf cannot satisfy, the KB's compatibility relation for that slot is walked in order. Each entry carries the pairing's basis and its spec deltas; SOPs carry `part_constraints` for slots where physics demands them (the COMP-7 fan slot requires airflow ≥ 420 m³/h). A candidate that is not stocked, is short of the required quantity, violates a constraint, or lacks the spec to even be checked is **rejected**, with the reason named.
+   - **Replanning.** The first candidate that clears shelf and constraints is applied: plan steps are revised onto it, the requirement is satisfied *by substitute*, and a `Substitution` record (original, substitute, basis, spec deltas, outcome) rides on the plan. The code checks then measure the *revised* plan, and a critic's part gap for a part the pass resolved is retired as stale. When nothing passes, the surviving `part_unavailable` gap's detail is rewritten to document the search.
 
 ### Loop control (`loops.CaseLoopController`)
 
@@ -58,7 +66,7 @@ Evaluated in this order after every verify round (and at prepare for the first):
 | Exit | Condition | Draft |
 |---|---|---|
 | `safety_stop` | Case type is `safety_observation` (at prepare, round 0 — the case is never diagnosed), **or** any open gap is a safety-flagged `banned_action` | escalation |
-| `blocked_external` | A `part_unavailable` gap names a part that is not stocked at all, or is stocked out with no *available* approved substitute — more rounds cannot fix a shelf | escalation |
+| `blocked_external` | A `part_unavailable` gap survives whose part the verify stage's own search could not cover — no substitute listed, none in stock, or every candidate rejected by the SOP's constraints — more rounds cannot fix a shelf; the escalation documents the search | escalation |
 | `converged` | No open gaps after verify | work order |
 | `budget_exceeded` | Cumulative case tokens exceed `LOOP_CASE_TOKEN_BUDGET` with gaps still open | escalation |
 | `exhausted` | Round count reaches `LOOP_MAX_ROUNDS` (default 3) with gaps still open | escalation, gaps named |
@@ -70,6 +78,8 @@ The ordering matters: a safety stop outranks a blocked shelf; a clean verify con
 Every case — converged or escalated, including safety stops — ends `awaiting_supervisor` with its draft. In the case graph this is a LangGraph **interrupt** before the decision node: the run pauses, the record persists, and `record_decision` either **resumes** the graph (checkpoint live) or **applies the decision directly** to the stored record (checkpoint gone — API restart, checkpoints off). Both paths produce the same record; the record is the source of truth. Board runs use *record* mode (no pause) because a board run must finish; the gate state is identical, only the pause differs.
 
 The gate is a hard boundary, stated on every record (`GATE_NOTICE`): the agent never issues commands to machines, never marks work performed, never closes a case. A guardrail also screens the draft text itself for performed-work phrasing ("we replaced…", "back in production") — a draft that claims the work happened fails its own record's checks.
+
+**The work-order packet** (`packet.py`, `GET /api/cases/{id}/packet`, JSON or `?format=text`): the floor copy of a gated case, composed in code from the record only — case summary, diagnosis with evidence, plan steps in order, the mandatory safety steps again as a check-off list, the parts with any substitution flagged (basis and spec deltas), estimated downtime, and blank sign-off lines (supervisor / technician / completion with actual downtime and parts used). Only a converged case packets — a non-converged exit or a rejected draft raises a 409, because an unverified plan must not reach the floor dressed as a work order. An awaiting case packets under its draft banner; an approved one carries the approval on its face.
 
 ## After the gate: outcomes, live accuracy, the watch
 
@@ -88,7 +98,7 @@ The gate decision (approve/reject) is not the end of the record's life — it is
 | Mandatory safety steps | `guardrails.verify_plan` vs the SOP's code-side list (matched by step id or ≥0.55 token overlap, so rewording can't smuggle one out) | missing step = blocking safety gap |
 | Banned actions | `screening.screen_plan_step` over every plan step (interlock/guard bypass, defeating a safety device, hot work on live equipment) | safety gap → `safety_stop` the same round |
 | Injection screen | `screening.screen_text` on title/description/notes before anything else: instruction-shaped spans (incl. "skip the lockout…") are struck, flagged on the record, and the surviving text is fenced as untrusted data in prompts | planted instructions never reach a plan |
-| Parts reality | planner resolution + `part_unavailable` gap + blocked-exit rule | a plan can only promise what the shelf holds |
+| Parts reality | verify-stage parts pass: shelf truth for every requirement + the KB substitute search with SOP constraints (`substitution.py`), then the `part_unavailable` gap + blocked-exit rule | a plan can only promise what the shelf holds — directly, or via a substitute that was searched, checked and recorded |
 | Draft language | `guardrails.draft_language_ok` | no performed-work claims in drafts |
 
 ## Backends behind the port
