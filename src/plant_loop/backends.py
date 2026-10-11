@@ -550,7 +550,10 @@ def _sig_tool_imbalance(ctx: CaseContext):
     vib = _num(ctx.case, "spindle_vibration_mm_s")
     if vib is None or vib < 5.0:
         return None
-    return 0.55, [
+    # Vibration this strong is a shared symptom: imbalance stays a
+    # live rival until the runout check separates the two.
+    confidence = 0.6 if vib >= 7.0 else 0.5
+    return confidence, [
         f"spindle vibration {vib} mm/s is also consistent with tool imbalance; "
         "the runout discriminating check has not been applied yet"
     ]
