@@ -330,5 +330,6 @@
     {"hist_id": "H-1019", "machine_id": "CONV-5", "fault_class": "belt_tracking_fault", "date": "2026-08-08", "summary": "Belt drifted to the west edge and frayed; two rollers found out of parallel.", "resolution": "Rollers realigned; belt section replaced.", "downtime_min": 75},
     {"hist_id": "H-0931", "machine_id": "COMP-7", "fault_class": "cooling_fan_failure", "date": "2026-07-11", "summary": "Discharge temperature hit 112 C; fan motor winding open-circuit.", "resolution": "Fan assembly replaced (part had to be ordered; 2 days on reduced load).", "downtime_min": 95},
     {"hist_id": "H-1120", "machine_id": "PACK-6", "fault_class": "seal_temperature_drift", "date": "2026-09-19", "summary": "Seal failures clustered on night shift; seal bar element resistance out of range.", "resolution": "Seal bar replaced and calibrated; pull tests passed.", "downtime_min": 50}
-  ]
+  ],
+  "pm": {"note": "The preventive-maintenance proposal rule, as authored in the plant model (pm.py reads it; every proposal prints the values it used). When the recurring-fault watch's pattern earns a proposal, the proposed inspection interval is interval_fraction x the observed mean gap between the cited faults, clamped to [min_interval_days, max_interval_days]. A deferred PM rolls its due point forward by deferral_roll_days from the deferral — soon, not a full interval, because the pattern that earned the obligation has not gone away.", "interval_fraction": 0.5, "min_interval_days": 3, "max_interval_days": 30, "deferral_roll_days": 7}
 }

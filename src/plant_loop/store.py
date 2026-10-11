@@ -22,10 +22,20 @@ import json
 
 from . import economics as economics_module
 from .config import env_str, load_dotenv
-from .schemas import BoardItem, CaseResult, HistoryEntry, PartClaim
+from .schemas import BoardItem, CaseResult, HistoryEntry, PartClaim, PmObligation, PmProposal
 
 # The record type the store carries (the name ports.py refers to).
 CaseRecord = CaseResult
+
+# PM records (pm.py) are two models on one table, told apart by
+# their kind: a proposal, or the obligation its approval creates.
+PmRecord = PmProposal | PmObligation
+
+
+def _pm_from_payload(payload: dict) -> PmRecord:
+    if payload.get("kind") == "obligation":
+        return PmObligation.model_validate(payload)
+    return PmProposal.model_validate(payload)
 
 
 class StoreBase:
@@ -68,6 +78,15 @@ class StoreBase:
         raise NotImplementedError
 
     def all_part_claims(self) -> list[PartClaim]:
+        return []
+
+    def save_pm_record(self, record: PmRecord) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+    def get_pm_record(self, record_id: str) -> PmRecord | None:  # pragma: no cover
+        raise NotImplementedError
+
+    def all_pm_records(self) -> list[PmRecord]:
         return []
 
     def save_error(self, entry: dict) -> None:
@@ -153,6 +172,7 @@ class InMemoryStore(StoreBase):
         self._board_items: dict[str, BoardItem] = {}
         self._history_entries: dict[str, HistoryEntry] = {}
         self._part_claims: dict[str, PartClaim] = {}
+        self._pm_records: dict[str, PmRecord] = {}
         self._errors: list[dict] = []
 
     def save_case(self, record: CaseResult) -> None:
@@ -199,6 +219,19 @@ class InMemoryStore(StoreBase):
 
     def all_part_claims(self) -> list[PartClaim]:
         return list(self._part_claims.values())
+
+    def save_pm_record(self, record: PmRecord) -> None:
+        # Upsert by record id: a proposal's decision and an
+        # obligation's cycle stamps are the same record changing
+        # state, not new records.
+        record_id = record.proposal_id if isinstance(record, PmProposal) else record.obligation_id
+        self._pm_records[record_id] = record
+
+    def get_pm_record(self, record_id: str) -> PmRecord | None:
+        return self._pm_records.get(record_id)
+
+    def all_pm_records(self) -> list[PmRecord]:
+        return list(self._pm_records.values())
 
     def save_error(self, entry: dict) -> None:
         self._errors.append(entry)
@@ -351,6 +384,34 @@ class PostgresStore(StoreBase):
             with conn.cursor() as cur:
                 cur.execute("SELECT payload FROM part_claims ORDER BY created_at, claim_id")
                 return [PartClaim.model_validate(row[0]) for row in cur.fetchall()]
+
+    def save_pm_record(self, record: PmRecord) -> None:
+        record_id = record.proposal_id if isinstance(record, PmProposal) else record.obligation_id
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO pm_records (record_id, kind, status, machine_id, fault_class, payload) "
+                    "VALUES (%s, %s, %s, %s, %s, %s::jsonb) "
+                    "ON CONFLICT (record_id) DO UPDATE SET kind = EXCLUDED.kind, "
+                    "status = EXCLUDED.status, machine_id = EXCLUDED.machine_id, "
+                    "fault_class = EXCLUDED.fault_class, payload = EXCLUDED.payload",
+                    (record_id, record.kind, record.status, record.machine_id,
+                     record.fault_class, record.model_dump_json()),
+                )
+            conn.commit()
+
+    def get_pm_record(self, record_id: str) -> PmRecord | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT payload FROM pm_records WHERE record_id = %s", (record_id,))
+                row = cur.fetchone()
+        return _pm_from_payload(row[0]) if row else None
+
+    def all_pm_records(self) -> list[PmRecord]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT payload FROM pm_records ORDER BY created_at, record_id")
+                return [_pm_from_payload(row[0]) for row in cur.fetchall()]
 
     def save_error(self, entry: dict) -> None:
         with self._connect() as conn:

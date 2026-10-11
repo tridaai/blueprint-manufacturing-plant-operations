@@ -64,6 +64,25 @@ def line_downtime_rate(line_id: str) -> float | None:
     return float(rate) if rate is not None else None
 
 
+def pm_policy() -> dict:
+    """The preventive-maintenance proposal rule, as authored in the
+    plant model (the ``pm`` section of kb.json): the interval
+    fraction, its clamp bounds, and the deferral roll, in days.
+
+    Like the line rates, these are plant-model data — a deployment
+    whose plant model lives in a real CMMS carries them the same
+    way, and there is deliberately no env override. Defaults below
+    repeat the authored values so a plant model missing the section
+    still behaves as authored rather than crashing (pm.py)."""
+    section = load_kb().get("pm") or {}
+    return {
+        "interval_fraction": float(section.get("interval_fraction", 0.5)),
+        "min_interval_days": int(section.get("min_interval_days", 3)),
+        "max_interval_days": int(section.get("max_interval_days", 30)),
+        "deferral_roll_days": int(section.get("deferral_roll_days", 7)),
+    }
+
+
 def machines() -> dict[str, dict]:
     return {m["machine_id"]: m for m in load_kb()["machines"]}
 

@@ -46,6 +46,8 @@ from .schemas import (
     Gap,
     HistoryEntry,
     PartClaim,
+    PmObligation,
+    PmProposal,
 )
 
 
@@ -159,6 +161,12 @@ class Store(Protocol):
     def save_part_claim(self, claim: "PartClaim") -> None: ...
 
     def all_part_claims(self) -> list["PartClaim"]: ...
+
+    def save_pm_record(self, record: "PmProposal | PmObligation") -> None: ...
+
+    def get_pm_record(self, record_id: str) -> "PmProposal | PmObligation | None": ...
+
+    def all_pm_records(self) -> list["PmProposal | PmObligation"]: ...
 
     def save_error(self, entry: dict) -> None: ...
 

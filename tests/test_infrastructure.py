@@ -20,12 +20,14 @@ def test_migrations_are_numbered_and_cover_the_schema():
         "0003_board_items.sql",
         "0004_history_entries.sql",
         "0005_part_claims.sql",
+        "0006_pm_records.sql",
     ]
     sql = files[0].read_text()
     for table in ("case_records", "board_runs", "run_errors"):
         assert f"CREATE TABLE IF NOT EXISTS {table}" in sql
     assert "vector" in files[1].read_text()
     assert "CREATE TABLE IF NOT EXISTS part_claims" in files[4].read_text()
+    assert "CREATE TABLE IF NOT EXISTS pm_records" in files[5].read_text()
 
 
 def test_dotenv_loader(tmp_path, monkeypatch):

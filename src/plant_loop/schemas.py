@@ -249,6 +249,100 @@ class BoardItem(BaseModel):
     created_at: str = ""
 
 
+class PmProposal(BaseModel):
+    """A preventive-maintenance proposal the reliability watch earned.
+
+    When the watch's recurrence rule fires for a machine + fault
+    class, the pattern stops being only a board item: this proposal
+    is drafted in code (pm.py) from the watch's own contributing
+    set — the cited cases are its evidence, and the proposed
+    inspection interval is derived from their spacing by the
+    plant model's authored rule, with the arithmetic carried on
+    the record so the supervisor decides on the numbers, not on a
+    summary of them. A proposal is PROPOSED until a supervisor
+    approves it (the approved interval is what stands — it may
+    differ from the proposal's) or rejects it with a reason; a
+    rejection moves the evidence watermark, so the same evidence
+    can never re-draft this proposal (pm.py).
+    """
+
+    proposal_id: str
+    kind: str = "proposal"  # the pm_records kind column
+    status: str = "proposed"  # proposed | approved | rejected
+    machine_id: str = ""
+    fault_class: str = ""
+    line_id: str = ""
+    # The watch item this proposal answers, when one stands open
+    # for the pair (the usual case — the two are raised together).
+    board_item_id: str = ""
+    # The evidence: the watch's contributing cases, cited by id
+    # and by the moment each entered the record. Never summarised.
+    evidence: list[dict] = Field(default_factory=list)  # [{case_id, at}]
+    fault_count: int = 0
+    window_days: int = 0
+    threshold: int = 0
+    # The interval arithmetic, as printed for the supervisor.
+    gaps_days: list[float] = Field(default_factory=list)
+    mean_gap_days: float = 0.0
+    interval_fraction: float = 0.0
+    min_interval_days: int = 0
+    max_interval_days: int = 0
+    raw_interval_days: float = 0.0
+    clamped: bool = False
+    proposed_interval_days: int = 0
+    rationale: str = ""
+    created_at: str = ""
+    # The supervisor's decision, when recorded.
+    decided_by: str = ""
+    decided_at: str = ""
+    decision_reason: str = ""  # required for a rejection
+    approved_interval_days: int | None = None
+
+
+class PmObligation(BaseModel):
+    """A standing preventive-maintenance obligation.
+
+    Created by approving a PmProposal — and by nothing else: the
+    agent drafts proposals and surfaces due cases, but an
+    obligation exists only because a supervisor approved one, and
+    a PM is marked performed only because a supervisor's outcome
+    on the surfaced case said so (pm.py). The obligation carries
+    the approved interval, the clock it runs on (from the last
+    performed inspection — supervisor-declared at approval when
+    the plant knows it, else from the approval itself), the cycle
+    case currently on the board, and the deferral history: a
+    deferred PM rolls its due point forward by the plant model's
+    deferral step, with the supervisor's reason kept.
+    """
+
+    obligation_id: str
+    kind: str = "obligation"  # the pm_records kind column
+    status: str = "standing"  # standing (obligations do not lapse)
+    proposal_id: str = ""
+    machine_id: str = ""
+    fault_class: str = ""
+    line_id: str = ""
+    interval_days: int = 0  # the APPROVED interval — the one that stands
+    approved_by: str = ""
+    approved_at: str = ""
+    # The clock: due = basis + interval. The basis is the last
+    # performed inspection when the supervisor declared it at
+    # approval (last_performed_at set), else the approval itself.
+    clock_basis: str = ""  # last_performed | approval
+    last_performed_at: str = ""  # "" until a PM is performed
+    next_due_at: str = ""
+    # The open cycle: the case the board is carrying for this
+    # obligation ("" between cycles). cycle_case_ids is every
+    # cycle's case, append-only — the evidence exclusion list
+    # (an inspection the system scheduled is not a recurrence).
+    cycle_case_id: str = ""
+    cycle_case_ids: list[str] = Field(default_factory=list)
+    cycles_completed: int = 0
+    last_cycle: dict = Field(default_factory=dict)  # {case_id, result, at, by}
+    deferrals: list[dict] = Field(default_factory=list)
+    created_at: str = ""
+
+
 class HistoryEntry(BaseModel):
     """One supervisor-confirmed fault, written back to the plant's memory.
 
@@ -450,6 +544,11 @@ class BoardRunResult(BaseModel):
     carried_from: str = ""
     carry_over_settled: dict = Field(default_factory=dict)
     carry_over: list[dict] = Field(default_factory=list)
+    # Preventive maintenance (pm.py): the due-obligation cases this
+    # run surfaced onto its board — ordinary maintenance_alert
+    # cases in `processed`, named here so a reader can tell which
+    # of the board's cases the plant's standing obligations sent.
+    pm_cases: list[str] = Field(default_factory=list)
     handoff_summary: str = ""
     telemetry: CaseTelemetry = Field(default_factory=CaseTelemetry)
     created_at: str = ""

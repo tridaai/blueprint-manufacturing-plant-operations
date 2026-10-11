@@ -64,15 +64,25 @@ class ReliabilityWatch:
         self.store = store
         self.policy = policy or ReliabilityPolicy()
 
-    def check(
-        self, trigger: CaseResult, *, now: datetime | None = None
-    ) -> BoardItem | None:
-        """Raise (and return) a reliability item if the trigger's
-        machine + fault class just crossed the threshold; else None."""
-        machine_id = trigger.machine_id
-        fault_class = effective_fault_class(trigger)
+    def contributing_cases(
+        self,
+        machine_id: str,
+        fault_class: str,
+        *,
+        now: datetime | None = None,
+    ) -> list[CaseResult]:
+        """The cases the watch counts for one machine + fault class
+        inside the rolling window, oldest first.
+
+        This IS the recurrence definition — the threshold check
+        below and the PM proposal layer (pm.py) both read it, so
+        the pattern is defined exactly once, here. A case counts
+        at the moment it entered the record (created, else
+        reported); its fault is the supervisor's confirmed fault
+        when an outcome recorded one, else the loop's top
+        diagnosis."""
         if not machine_id or not fault_class:
-            return None
+            return []
         moment = now or datetime.now(timezone.utc)
         window_start = moment - timedelta(days=self.policy.window_days)
         contributing: list[CaseResult] = []
@@ -85,6 +95,20 @@ class ReliabilityWatch:
             if at is None or not (window_start <= at <= moment):
                 continue
             contributing.append(record)
+        contributing.sort(key=lambda r: (case_moment(r) or moment, r.case_id))
+        return contributing
+
+    def check(
+        self, trigger: CaseResult, *, now: datetime | None = None
+    ) -> BoardItem | None:
+        """Raise (and return) a reliability item if the trigger's
+        machine + fault class just crossed the threshold; else None."""
+        machine_id = trigger.machine_id
+        fault_class = effective_fault_class(trigger)
+        if not machine_id or not fault_class:
+            return None
+        moment = now or datetime.now(timezone.utc)
+        contributing = self.contributing_cases(machine_id, fault_class, now=moment)
         if len(contributing) < self.policy.threshold:
             return None
         for item in self.store.all_board_items():
