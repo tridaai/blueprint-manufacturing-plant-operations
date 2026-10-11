@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 
 from .config import env_str, load_dotenv
-from .schemas import CaseResult
+from .schemas import BoardItem, CaseResult
 
 # The record type the store carries (the name ports.py refers to).
 CaseRecord = CaseResult
@@ -44,6 +44,18 @@ class StoreBase:
 
     def get_board_run(self, run_id: str) -> dict | None:  # pragma: no cover
         raise NotImplementedError
+
+    def all_board_runs(self) -> list[dict]:
+        return []
+
+    def save_board_item(self, item: BoardItem) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+    def get_board_item(self, item_id: str) -> BoardItem | None:  # pragma: no cover
+        raise NotImplementedError
+
+    def all_board_items(self) -> list[BoardItem]:
+        return []
 
     def save_error(self, entry: dict) -> None:
         pass  # doubles may legitimately keep no error log
@@ -111,6 +123,7 @@ class InMemoryStore(StoreBase):
     def __init__(self) -> None:
         self._cases: dict[str, CaseResult] = {}
         self._board_runs: dict[str, dict] = {}
+        self._board_items: dict[str, BoardItem] = {}
         self._errors: list[dict] = []
 
     def save_case(self, record: CaseResult) -> None:
@@ -127,6 +140,18 @@ class InMemoryStore(StoreBase):
 
     def get_board_run(self, run_id: str) -> dict | None:
         return self._board_runs.get(run_id)
+
+    def all_board_runs(self) -> list[dict]:
+        return list(self._board_runs.values())
+
+    def save_board_item(self, item: BoardItem) -> None:
+        self._board_items[item.item_id] = item
+
+    def get_board_item(self, item_id: str) -> BoardItem | None:
+        return self._board_items.get(item_id)
+
+    def all_board_items(self) -> list[BoardItem]:
+        return list(self._board_items.values())
 
     def save_error(self, entry: dict) -> None:
         self._errors.append(entry)
@@ -210,6 +235,37 @@ class PostgresStore(StoreBase):
                 cur.execute("SELECT payload FROM board_runs WHERE run_id = %s", (run_id,))
                 row = cur.fetchone()
         return row[0] if row else None
+
+    def all_board_runs(self) -> list[dict]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT payload FROM board_runs ORDER BY created_at, run_id")
+                return [row[0] for row in cur.fetchall()]
+
+    def save_board_item(self, item: BoardItem) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO board_items (item_id, kind, status, payload) "
+                    "VALUES (%s, %s, %s, %s::jsonb) "
+                    "ON CONFLICT (item_id) DO UPDATE SET kind = EXCLUDED.kind, "
+                    "status = EXCLUDED.status, payload = EXCLUDED.payload",
+                    (item.item_id, item.kind, item.status, item.model_dump_json()),
+                )
+            conn.commit()
+
+    def get_board_item(self, item_id: str) -> BoardItem | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT payload FROM board_items WHERE item_id = %s", (item_id,))
+                row = cur.fetchone()
+        return BoardItem.model_validate(row[0]) if row else None
+
+    def all_board_items(self) -> list[BoardItem]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT payload FROM board_items ORDER BY created_at, item_id")
+                return [BoardItem.model_validate(row[0]) for row in cur.fetchall()]
 
     def save_error(self, entry: dict) -> None:
         with self._connect() as conn:

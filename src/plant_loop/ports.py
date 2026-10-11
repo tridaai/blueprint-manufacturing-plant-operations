@@ -37,7 +37,7 @@ if TYPE_CHECKING:  # annotation-only imports (no runtime cycles)
     from .events import RunEvent
     from .store import CaseRecord
 
-from .schemas import ActionPlan, Critique, Diagnosis, ExceptionCase, Gap
+from .schemas import ActionPlan, BoardItem, Critique, Diagnosis, ExceptionCase, Gap
 
 
 @dataclass
@@ -125,6 +125,14 @@ class Store(Protocol):
     def save_board_run(self, run: dict) -> None: ...
 
     def get_board_run(self, run_id: str) -> dict | None: ...
+
+    def all_board_runs(self) -> list[dict]: ...
+
+    def save_board_item(self, item: "BoardItem") -> None: ...
+
+    def get_board_item(self, item_id: str) -> "BoardItem | None": ...
+
+    def all_board_items(self) -> list["BoardItem"]: ...
 
     def save_error(self, entry: dict) -> None: ...
 

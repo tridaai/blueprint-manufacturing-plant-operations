@@ -92,6 +92,28 @@ class BoardPolicy:
 
 
 @dataclass
+class ReliabilityPolicy:
+    """The recurring-fault watch's bounds (reliability.py).
+
+    When the same machine produces ``threshold`` cases of the same
+    fault class inside ``window_days``, the watch raises one
+    ``reliability_review`` board item. Fixing the same bearing three
+    times in a fortnight is a reliability problem wearing a
+    maintenance costume — the watch exists to say so, in code.
+    """
+
+    threshold: int = 3
+    window_days: int = 14
+
+    @classmethod
+    def from_env(cls) -> "ReliabilityPolicy":
+        return cls(
+            threshold=env_int("RELIABILITY_THRESHOLD", 3),
+            window_days=env_int("RELIABILITY_WINDOW_DAYS", 14),
+        )
+
+
+@dataclass
 class CaseOutcome:
     """What one case loop produced, before the record is assembled."""
 

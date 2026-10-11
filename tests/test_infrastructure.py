@@ -14,7 +14,11 @@ from plant_loop.objectstore import InMemoryObjectStore, S3ObjectStore
 
 def test_migrations_are_numbered_and_cover_the_schema():
     files = migration_files()
-    assert [f.name for f in files] == ["0001_case_records.sql", "0002_kb_embeddings.sql"]
+    assert [f.name for f in files] == [
+        "0001_case_records.sql",
+        "0002_kb_embeddings.sql",
+        "0003_board_items.sql",
+    ]
     sql = files[0].read_text()
     for table in ("case_records", "board_runs", "run_errors"):
         assert f"CREATE TABLE IF NOT EXISTS {table}" in sql

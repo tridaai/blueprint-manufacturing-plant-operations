@@ -100,6 +100,16 @@ def substitute_for(sop: dict | None, part_id: str) -> str:
     return str(sop.get("substitutes", {}).get(part_id, ""))
 
 
+def fault_classes() -> list[str]:
+    """The fault vocabulary: every fault class the plant has an SOP
+    or a history entry for. Diagnoses speak it, and a supervisor's
+    confirmed fault must be one of these — a confirmation outside the
+    vocabulary is a data error, not a new fact about the plant."""
+    classes = {sop["fault_class"] for sop in sops()}
+    classes |= {entry["fault_class"] for entry in load_kb()["history"]}
+    return sorted(classes)
+
+
 def history_for(machine_id: str, fault_class: str = "") -> list[dict]:
     entries = [h for h in load_kb()["history"] if h["machine_id"] == machine_id]
     if fault_class:

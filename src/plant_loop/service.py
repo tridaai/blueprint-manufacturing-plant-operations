@@ -27,12 +27,21 @@ from datetime import datetime, timezone
 from langgraph.types import Command
 from pydantic import ValidationError
 
+from . import handoff as handoff_module
+from . import stats as stats_module
 from .events import CollectingSink, RunEvent, format_timestamp
 from .graph import CaseRunOutcome, build_board_graph, build_case_graph
-from .loops import BoardPolicy, CaseLoopController, LoopPolicy
+from .loops import BoardPolicy, CaseLoopController, LoopPolicy, ReliabilityPolicy
 from .objectstore import payload_bytes
 from .ports import Checkpointer, EventSink, ObjectStore, Reasoner, Retriever, Store
-from .schemas import BoardRunResult, CaseResult, ExceptionCase
+from .reliability import ReliabilityWatch
+from .schemas import (
+    BoardItem,
+    BoardRunResult,
+    CaseResult,
+    ExceptionCase,
+    SupervisorOutcome,
+)
 
 
 class PlantService:
@@ -45,6 +54,7 @@ class PlantService:
         checkpointer: Checkpointer | None = None,
         loop_policy: LoopPolicy | None = None,
         board_policy: BoardPolicy | None = None,
+        reliability_policy: ReliabilityPolicy | None = None,
     ) -> None:
         self.reasoner = reasoner
         self.retriever = retriever
@@ -54,7 +64,18 @@ class PlantService:
         self._checkpointer_ready = checkpointer is not None
         self.loop_policy = loop_policy or LoopPolicy.from_env()
         self.board_policy = board_policy or BoardPolicy.from_env()
+        self.reliability_policy = reliability_policy or ReliabilityPolicy.from_env()
         self._case_graphs: dict[int, object] = {}
+
+    @property
+    def reliability_watch(self) -> ReliabilityWatch:
+        return ReliabilityWatch(self.store, self.reliability_policy)
+
+    def _persist_case(self, record: CaseResult) -> None:
+        """Save a case that reached the gate, then run the
+        recurring-fault watch over it (reliability.py)."""
+        self.store.save_case(record)
+        self.reliability_watch.check(record)
 
     # -- collaborators ---------------------------------------------------
 
@@ -116,7 +137,7 @@ class PlantService:
             result = CaseResult.model_validate(state.values["result"])
         else:
             result = CaseResult.model_validate(output["result"])
-        self.store.save_case(result)
+        self._persist_case(result)
         return CaseRunOutcome(result=result, awaiting_supervisor=awaiting)
 
     def record_decision(
@@ -137,6 +158,27 @@ class PlantService:
         record.decision_reason = reason
         record.status = "approved" if decision == "approved" else "rejected"
         self.store.save_case(record)
+        return record
+
+    def record_outcome(self, case_id: str, outcome: SupervisorOutcome) -> CaseResult:
+        """Record what actually happened after the gate.
+
+        The outcome is the ground truth the diagnosis stats and the
+        reliability watch read. It is recorded once — a second
+        outcome for the same case is a conflict, not an edit (a
+        corrected fact belongs in a corrected record, visibly).
+        Recording one re-runs the watch: a confirmed fault can be
+        the case that completes a pattern.
+        """
+        record = self.store.get_case(case_id)
+        if record is None:
+            raise KeyError(f"unknown case: {case_id}")
+        if record.outcome is not None:
+            raise ValueError(f"case {case_id} already has a recorded outcome")
+        outcome.recorded_at = format_timestamp(datetime.now(timezone.utc))
+        record.outcome = outcome
+        self.store.save_case(record)
+        self.reliability_watch.check(record)
         return record
 
     def _try_resume(self, case_id: str, payload: dict) -> CaseResult | None:
@@ -180,7 +222,7 @@ class PlantService:
         board_graph = build_board_graph(
             case_graph,
             board_policy or self.board_policy,
-            on_case_result=self.store.save_case,
+            on_case_result=self._persist_case,
             sink=sink,
         )
         output = board_graph.invoke(
@@ -206,6 +248,18 @@ class PlantService:
 
     def get_board_run(self, run_id: str) -> dict | None:
         return self.store.get_board_run(run_id)
+
+    def diagnosis_stats(self) -> dict:
+        return stats_module.diagnosis_stats(self.store.all_cases())
+
+    def handoff(self) -> dict:
+        """The shift handoff payload + its plain-text rendering."""
+        payload = handoff_module.build_handoff(self.store)
+        payload["text"] = handoff_module.render_text(payload)
+        return payload
+
+    def board_items(self) -> list[BoardItem]:
+        return self.store.all_board_items()
 
     # -- internals ---------------------------------------------------------------
 

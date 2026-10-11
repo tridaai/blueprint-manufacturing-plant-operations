@@ -15,6 +15,14 @@ every route delegates, none re-implements. Notable behaviour:
   through the board loop in priority order, to the shift budget;
 - ``POST /cases/{id}/decision`` records approve/reject — the ONLY
   way a case leaves ``awaiting_supervisor``;
+- ``POST /api/cases/{id}/outcome`` records what actually happened
+  after the gate (the plan's disposition, the confirmed fault, the
+  real downtime) — the ground truth behind ``GET
+  /api/stats/diagnosis`` and the recurring-fault watch;
+- ``GET /api/board/handoff`` renders the current board as a shift
+  handoff (JSON, or ``?format=text`` for the shift-log text);
+- ``GET /api/board/items`` lists the non-case board items (the
+  reliability reviews the watch raises);
 - ``/readiness`` fails (503) when PostgreSQL is configured but
   unreachable, and says honestly when the in-memory test doubles are
   in use (records lost on restart — fine for a look, not for work).
@@ -32,16 +40,16 @@ from importlib import resources
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__
+from . import __version__, kb
 from .config import env_str, load_dotenv
 from .errors import ProviderError
 from .loops import BoardPolicy
 from .samples import load_sample_cases
-from .schemas import ExceptionCase
+from .schemas import OUTCOME_DECISIONS, ExceptionCase, SupervisorOutcome
 from .service import PlantService
 from .wiring import build_service
 
@@ -306,6 +314,98 @@ def get_board_run(run_id: str):
 @app.get("/metrics")
 def metrics():
     return get_service().metrics()
+
+
+# ---------------------------------------------------------------------------
+# outcomes, live stats, handoff, board items (closing the loop)
+# ---------------------------------------------------------------------------
+
+
+class OutcomeRequest(BaseModel):
+    decision: str  # accepted | accepted_with_changes | rejected
+    confirmed_fault: str = ""  # a fault class from the vocabulary, or ""
+    work_performed: str = ""
+    downtime_minutes_actual: int | None = None
+    parts_used: list[str] = []
+    resolved: bool | None = None
+    by: str = ""
+
+
+@app.post("/api/cases/{case_id}/outcome")
+def record_outcome(case_id: str, body: OutcomeRequest, request: Request):
+    """Record what actually happened after the gate.
+
+    Validation is strict on purpose: an outcome is ground truth, and
+    ground truth with a typo'd fault class in it poisons every stat
+    downstream. Unknown decisions, unknown fault classes and
+    negative downtime are 422s — never silently dropped or coerced.
+    """
+    if body.decision not in OUTCOME_DECISIONS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"decision must be one of {', '.join(OUTCOME_DECISIONS)}",
+        )
+    confirmed = body.confirmed_fault.strip()
+    if confirmed and confirmed not in kb.fault_classes():
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown fault class: {confirmed!r} (see GET /api/fault-classes)",
+        )
+    if body.downtime_minutes_actual is not None and body.downtime_minutes_actual < 0:
+        raise HTTPException(status_code=422, detail="downtime_minutes_actual cannot be negative")
+    outcome = SupervisorOutcome(
+        decision=body.decision,
+        confirmed_fault=confirmed,
+        work_performed=body.work_performed.strip(),
+        downtime_minutes_actual=body.downtime_minutes_actual,
+        parts_used=[p.strip() for p in body.parts_used if p.strip()],
+        resolved=body.resolved,
+        recorded_by=body.by.strip(),
+    )
+    service = get_service()
+    try:
+        record = service.record_outcome(case_id, outcome)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"unknown case: {case_id}") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return record.model_dump()
+
+
+@app.get("/api/stats/diagnosis")
+def stats_diagnosis():
+    """Live diagnosis accuracy over outcome-carrying records.
+
+    With no outcomes recorded yet the payload says so (``available:
+    false`` with the honest note) instead of printing zeroes that
+    look like a failing agent.
+    """
+    return get_service().diagnosis_stats()
+
+
+@app.get("/api/board/handoff")
+def board_handoff(format: str = "json"):
+    """The shift handoff for the board as it stands.
+
+    JSON carries every section plus the rendered ``text``; with
+    ``?format=text`` the response IS the text, ready for a shift log.
+    """
+    payload = get_service().handoff()
+    if format == "text":
+        return PlainTextResponse(payload["text"])
+    return payload
+
+
+@app.get("/api/board/items")
+def board_items():
+    """Non-case board items (reliability reviews raised by the watch)."""
+    return [item.model_dump() for item in get_service().board_items()]
+
+
+@app.get("/api/fault-classes")
+def fault_classes():
+    """The fault vocabulary diagnoses and confirmed faults speak."""
+    return {"fault_classes": kb.fault_classes()}
 
 
 @app.get("/evals/results")

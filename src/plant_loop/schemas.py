@@ -161,6 +161,59 @@ class DraftInfo(BaseModel):
     text: str = ""
 
 
+# The supervisor's verdict on the plan itself, recorded with the
+# outcome: distinct from the gate decision (approved / rejected),
+# which says whether the draft may proceed at all.
+OUTCOME_DECISIONS = ("accepted", "accepted_with_changes", "rejected")
+
+
+class SupervisorOutcome(BaseModel):
+    """What actually happened after the gate, recorded by a supervisor.
+
+    This is the ground truth the loop is measured against: the fault
+    the floor actually found (``confirmed_fault``, from the same
+    vocabulary the diagnoses use), whether the drafted plan was the
+    plan that got executed, and the downtime the case really cost.
+    Every field except ``decision`` may be left unrecorded — a partial
+    outcome still counts, and the stats say what they were computed
+    over rather than pretending the record is complete.
+    """
+
+    decision: str  # one of OUTCOME_DECISIONS
+    confirmed_fault: str = ""  # fault class, "" when not confirmed/recorded
+    work_performed: str = ""
+    downtime_minutes_actual: int | None = None
+    parts_used: list[str] = Field(default_factory=list)
+    resolved: bool | None = None  # None = not recorded
+    recorded_by: str = ""
+    recorded_at: str = ""
+
+
+class BoardItem(BaseModel):
+    """A non-case item on the board, raised by a code-side watch.
+
+    The board carries exceptions; it also carries the patterns the
+    exceptions form. A ``reliability_review`` item is raised when the
+    same machine keeps failing the same way (see reliability.py). It
+    is not an exception and it triggers nothing automatic — it waits
+    at the supervisor gate like everything else, carrying the cases
+    that are its evidence.
+    """
+
+    item_id: str
+    kind: str = "reliability_review"
+    status: str = "open"  # open | acknowledged
+    machine_id: str = ""
+    fault_class: str = ""
+    case_ids: list[str] = Field(default_factory=list)  # the evidence
+    count: int = 0
+    window_days: int = 0
+    threshold: int = 0
+    title: str = ""
+    detail: str = ""
+    created_at: str = ""
+
+
 class TraceStep(BaseModel):
     name: str
     title: str
@@ -195,6 +248,8 @@ class CaseResult(BaseModel):
     decision: str = ""
     decision_by: str = ""
     decision_reason: str = ""
+    # What actually happened after the gate, when recorded.
+    outcome: SupervisorOutcome | None = None
     trace: list[TraceStep] = Field(default_factory=list)
 
 
