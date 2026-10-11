@@ -428,6 +428,18 @@ def board_items():
     return [item.model_dump() for item in get_service().board_items()]
 
 
+@app.get("/api/allocations")
+def allocations():
+    """The allocation ledger: part claims, standing and released.
+
+    A converged case claims the parts its plan will draw; later
+    cases measure the shelf net of the claims standing. A gate
+    rejection releases its case's claims (stamped on the entry);
+    an approval leaves them standing.
+    """
+    return get_service().allocations()
+
+
 @app.get("/api/fault-classes")
 def fault_classes():
     """The fault vocabulary diagnoses and confirmed faults speak."""

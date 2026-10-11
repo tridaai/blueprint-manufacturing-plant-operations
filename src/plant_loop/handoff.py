@@ -6,7 +6,10 @@ current records, for the supervisor handing the plant over:
 
 - cases at the gate awaiting a decision (board order);
 - escalations (rounds exhausted, budget spent) with their open gaps;
-- blocked-external cases, with the part the plant is waiting on;
+- blocked-external cases, with the part the plant is waiting on —
+  and, when the wait is the board's own allocation (an earlier
+  case's claim holds the shelf's last unit), the claiming case,
+  named from the blocked record's own gap text;
 - safety stops (always listed separately — they outrank everything);
 - open reliability-review items the watch has raised;
 - the faults supervisors have confirmed and written back to the
@@ -26,6 +29,7 @@ returned.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 from .events import format_timestamp
@@ -39,6 +43,29 @@ from .schemas import (
 )
 
 _ESCALATION_EXITS = (EXIT_EXHAUSTED, EXIT_BUDGET_EXCEEDED)
+
+# The claim note the verify stage writes into a part gap when an
+# earlier case's allocation caused the shortfall (loops.py via
+# allocation.py): "claimed by <case>, higher priority on this
+# board" / "claimed by <case> (board run <id>)". The handoff reads
+# the claimer back out of that text — the gap was composed when
+# the case blocked, so it stays the truth of that run even if the
+# claim has since been released at a gate.
+_CLAIM_NOTE_RE = re.compile(r"claimed by ([^,(]+)")
+
+
+def _allocation_blocked(record: CaseResult) -> list[dict]:
+    """Parts this blocked case lost to another case's claim."""
+    found: list[dict] = []
+    for gap in record.open_gaps:
+        if gap.kind != "part_unavailable":
+            continue
+        match = _CLAIM_NOTE_RE.search(gap.detail)
+        if match:
+            found.append(
+                {"part_id": gap.ref, "claimed_by": match.group(1).strip()}
+            )
+    return found
 
 
 def _gate_order(records: list[CaseResult]) -> list[CaseResult]:
@@ -84,6 +111,7 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
             "missing_parts": [
                 p.part_id for p in r.plan.required_parts if not p.satisfied
             ],
+            "allocation_blocked": _allocation_blocked(r),
         }
         for r in waiting
         if r.exit_reason == EXIT_BLOCKED_EXTERNAL
@@ -191,7 +219,13 @@ def render_text(handoff: dict) -> str:
     if handoff["blocked_external"]:
         for entry in handoff["blocked_external"]:
             parts = ", ".join(entry["missing_parts"]) or "see record"
-            lines.append(_case_line(entry) + f" · waiting on: {parts}")
+            line = _case_line(entry) + f" · waiting on: {parts}"
+            for alloc in entry.get("allocation_blocked", []):
+                line += (
+                    f" · blocked by allocation: {alloc['part_id']} "
+                    f"claimed by {alloc['claimed_by']}"
+                )
+            lines.append(line)
     else:
         lines.append("  (none)")
     lines += ["", "SAFETY STOPS:"]

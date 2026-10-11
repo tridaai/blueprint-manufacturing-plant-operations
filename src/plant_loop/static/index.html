@@ -111,6 +111,7 @@
       <div id="board-run"></div>
       <div id="board" class="empty">Loading…</div>
       <div id="board-items"></div>
+      <div id="allocations"></div>
       <h3>Shift handoff</h3>
       <p class="note">The board as it stands, written for the next shift — composed in code from the records, never by a model.</p>
       <div class="row" style="margin:10px 0">
@@ -358,9 +359,31 @@ async function loadBoard() {
       });
     });
     loadBoardItems();
+    loadAllocations();
   } catch (err) {
     $("board").innerHTML = `<span class="empty">error: ${esc(err.message)}</span>`;
   }
+}
+
+function allocationsTable(claims) {
+  if (!claims || !claims.length) return "";
+  const rows = claims.map((c) => {
+    const part = c.original_part_id ? `${esc(c.part_id)} (for ${esc(c.original_part_id)})` : esc(c.part_id);
+    const standing = c.status === "claimed"
+      ? "claimed"
+      : `released — ${esc(c.release_reason || "")} by ${esc(c.released_by || "—")}`;
+    return `<tr><td>${part}</td><td>${c.qty}</td><td>${esc(c.case_id)}</td><td>${esc(c.run_id || "—")}</td><td>${standing}</td></tr>`;
+  }).join("");
+  return `<table><tr><th>Part</th><th>Qty</th><th>Claimed by</th><th>Run</th><th>Standing</th></tr>${rows}</table>`;
+}
+
+async function loadAllocations() {
+  try {
+    const claims = await call("/api/allocations");
+    $("allocations").innerHTML = claims.length
+      ? `<h3>Parts allocation ledger</h3><p class="note">A converged case claims the parts its plan will draw; later cases measure the shelf net of the claims standing. A gate rejection releases its case's claims for future runs.</p>` + allocationsTable(claims)
+      : "";
+  } catch (err) { /* the board still renders without the ledger */ }
 }
 $("board-refresh").addEventListener("click", loadBoard);
 
@@ -370,6 +393,9 @@ $("run-board").addEventListener("click", async () => {
     const run = await call("/board/run", { method: "POST", body: JSON.stringify({}) });
     let html = `<h3>Board run ${esc(run.run_id)} — ${esc(run.status)}</h3><table><tr><th>#</th><th>Case</th><th>Exit</th></tr>` +
       run.processed.map((cid, i) => `<tr><td>${i + 1}</td><td>${esc(cid)}</td><td>${esc(run.exits[cid] || "")}</td></tr>`).join("") + `</table>`;
+    if (run.allocations && run.allocations.length) {
+      html += `<h4>Allocation ledger — this run</h4>` + allocationsTable(run.allocations);
+    }
     if (run.remaining.length) {
       html += `<p class="flag">Not worked: ` + run.remaining.map((x) => `${esc(x.case_id)} (${esc(x.reason)})`).join(", ") + `</p>`;
     }

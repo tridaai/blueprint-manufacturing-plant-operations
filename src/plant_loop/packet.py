@@ -28,14 +28,25 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from .events import format_timestamp
-from .schemas import EXIT_CONVERGED, GATE_NOTICE, CaseResult
+from .schemas import EXIT_CONVERGED, GATE_NOTICE, CaseResult, PartClaim
 
 
-def build_packet(record: CaseResult, *, now: datetime | None = None) -> dict:
+def build_packet(
+    record: CaseResult,
+    *,
+    now: datetime | None = None,
+    claims: list[PartClaim] | None = None,
+) -> dict:
     """The packet payload for one gated case.
 
     Raises :class:`ValueError` when the case has no verified work
     order to packet (a non-converged exit, or a rejected draft).
+
+    ``claims`` is the case's allocation-ledger entries (round 5):
+    a part this case claimed when its plan converged is marked
+    *claimed for this case on the run*, so the technician reading
+    the packet can see the shelf unit is spoken for — by this work
+    order, against every other case on the board.
     """
     if record.exit_reason != EXIT_CONVERGED:
         raise ValueError(
@@ -73,6 +84,18 @@ def build_packet(record: CaseResult, *, now: datetime | None = None) -> dict:
         for step in record.plan.steps
         if step.kind == "safety" or step.mandatory
     ]
+    standing = {
+        claim.part_id: claim for claim in (claims or []) if claim.status == "claimed"
+    }
+
+    def _claim_fields(req) -> dict:
+        drawn = req.substitute_part_id or req.part_id
+        claim = standing.get(drawn)
+        return {
+            "claimed": claim is not None,
+            "claimed_on_run": claim.run_id if claim is not None else "",
+        }
+
     parts = [
         {
             "part_id": req.part_id,
@@ -80,6 +103,7 @@ def build_packet(record: CaseResult, *, now: datetime | None = None) -> dict:
             "on_hand": req.available_qty,
             "substituted": bool(req.substitute_part_id),
             "substitute_part_id": req.substitute_part_id,
+            **_claim_fields(req),
         }
         for req in record.plan.required_parts
     ]
@@ -172,12 +196,20 @@ def render_text(packet: dict) -> str:
     if packet["parts"]:
         by_part = {s["original_part_id"]: s for s in packet["substitutions"]}
         for part in packet["parts"]:
+            claimed = ""
+            if part.get("claimed"):
+                run = part.get("claimed_on_run") or ""
+                claimed = (
+                    f" · claimed for this case on board run {run}"
+                    if run and run != "single"
+                    else " · claimed for this case (single case run)"
+                )
             if part["substituted"]:
                 sub = by_part.get(part["part_id"])
                 lines.append(
                     f"  - {part['part_id']} x{part['qty']} — SUBSTITUTION: "
                     f"{part['substitute_part_id']} is fitted in place of {part['part_id']} "
-                    f"({part['on_hand']} of the original on hand)"
+                    f"({part['on_hand']} of the original on hand){claimed}"
                 )
                 if sub is not None:
                     if sub["basis"]:
@@ -189,7 +221,9 @@ def render_text(packet: dict) -> str:
                             f"-> {delta['substitute']}{note}"
                         )
             else:
-                lines.append(f"  - {part['part_id']} x{part['qty']} — {part['on_hand']} on hand")
+                lines.append(
+                    f"  - {part['part_id']} x{part['qty']} — {part['on_hand']} on hand{claimed}"
+                )
     else:
         lines.append("  (no parts required)")
     lines += [
