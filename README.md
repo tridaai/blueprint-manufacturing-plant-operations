@@ -12,6 +12,8 @@ Reasoning is led by **Muse Spark** (Meta's Model API), with a Responses-API mode
 
 > Reference prototype from Trida AI's blueprint series. The loops, guardrails and gate are the production-shaped parts; the plant data is a stand-in for the systems a real deployment would read.
 
+> **Work in progress** — this blueprint is built and passing its automated test and eval gates, but it has not yet finished hands-on local testing, and its companion blog post is not yet published. Expect changes. This notice comes off when both are done.
+
 ## The two loops
 
 **Board loop (outer).** Cases are ordered by a priority formula in code — never by the model — and worked one at a time. The run ends `board_clear` when every case is at the gate, or `shift_budget_exceeded` when the case/token budget for the shift is spent; whatever remains is listed, with reasons, in a written handoff summary. Nothing is silently dropped.
