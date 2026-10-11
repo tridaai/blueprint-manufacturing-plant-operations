@@ -9,6 +9,10 @@ current records, for the supervisor handing the plant over:
 - blocked-external cases, with the part the plant is waiting on;
 - safety stops (always listed separately — they outrank everything);
 - open reliability-review items the watch has raised;
+- the faults supervisors have confirmed and written back to the
+  machines' history — the memory the next shift's diagnoses start
+  from, named so the incoming supervisor knows what the plant has
+  newly learned;
 - the latest board run, and — when it was cut by the shift budget —
   what it did not reach.
 
@@ -92,6 +96,20 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
         for item in store.all_board_items()
         if item.status == "open"
     ]
+    confirmed_faults = [
+        {
+            "entry_id": e.entry_id,
+            "machine_id": e.machine_id,
+            "fault_class": e.fault_class,
+            "case_id": e.case_id,
+            "date": e.date,
+            "recorded_at": e.recorded_at,
+            "summary": e.summary,
+        }
+        for e in sorted(
+            store.all_history_entries(), key=lambda e: (e.date, e.entry_id)
+        )
+    ]
 
     runs = store.all_board_runs()
     last_run = None
@@ -132,6 +150,7 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
         "blocked_external": blocked,
         "safety_stops": safety_stops,
         "reliability_items": reliability_items,
+        "confirmed_faults": confirmed_faults,
         "last_board_run": last_run,
     }
 
@@ -187,6 +206,15 @@ def render_text(handoff: dict) -> str:
             )
     else:
         lines.append("  (none)")
+    lines += ["", "FAULTS CONFIRMED BY SUPERVISORS (WRITTEN BACK TO MACHINE HISTORY):"]
+    if handoff["confirmed_faults"]:
+        for entry in handoff["confirmed_faults"]:
+            lines.append(
+                f"  - {entry['machine_id']} · {entry['fault_class']} · "
+                f"confirmed in case {entry['case_id']} · {entry['date']}"
+            )
+    else:
+        lines.append("  (none yet — no supervisor outcome has confirmed a fault)")
     run = handoff["last_board_run"]
     lines += ["", "LAST BOARD RUN:"]
     if run is None:

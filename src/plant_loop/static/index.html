@@ -455,6 +455,14 @@ async function loadLiveStats() {
       <dt>Plans used</dt><dd>${pct(s.plan_acceptance.used_rate)} (accepted ${s.plan_acceptance.counts.accepted} · with changes ${s.plan_acceptance.counts.accepted_with_changes} · rejected ${s.plan_acceptance.counts.rejected})</dd>
       <dt>Downtime error</dt><dd>${s.downtime.n ? `mean ${s.downtime.mean_error_min} min · mean abs ${s.downtime.mean_absolute_error_min} min (n=${s.downtime.n})` : "no actuals recorded yet"}</dd>
     </dl>`;
+    if (s.learning_loop) {
+      const ll = s.learning_loop;
+      const byMachine = Object.entries(ll.written_back_by_machine || {}).map(([m, n]) => `${esc(m)} ×${n}`).join(" · ");
+      html += `<dl class="kv">
+      <dt>Written back to history</dt><dd>${ll.confirmed_written_back} confirmed fault(s)${byMachine ? ` (${byMachine})` : ""}</dd>
+      <dt>Repeat-fault top-1</dt><dd>${ll.repeat_cases ? `${pct(ll.repeat_top1_accuracy)} over ${ll.repeat_cases} repeat case(s) · overall top-1 ${pct(ll.overall_top1_accuracy)}` : esc(ll.note || "no repeat-fault cases yet")}</dd>
+    </dl>`;
+    }
     if (s.per_fault_class && s.per_fault_class.length) {
       html += `<table><tr><th>Fault class</th><th>Precision</th><th>Recall</th><th>TP / pred / actual</th></tr>` +
         s.per_fault_class.map((r) => `<tr><td>${esc(r.fault_class)}</td><td>${pct(r.precision)}</td><td>${pct(r.recall)}</td><td>${r.tp} / ${r.predicted} / ${r.actual}</td></tr>`).join("") + `</table>`;

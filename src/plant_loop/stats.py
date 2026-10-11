@@ -18,21 +18,34 @@ actually happening — the outcome loop:
 - **downtime error** — actual minus estimated downtime over the
   outcomes that recorded an actual: signed mean (bias) and mean
   absolute error (accuracy).
+- **the learning loop** — what the plant has written back to its
+  memory (confirmed faults, by machine) and how the loop scores on
+  *repeat* faults: scored cases whose machine + fault a supervisor
+  had already confirmed on an earlier case, with their top-1 rate
+  set beside the overall top-1 rate. Both numbers are reported
+  plainly, as counts over small samples — the section claims no
+  uplift; it shows the two rates and lets the reader judge.
 
-Everything here is a pure function over case records — the same
-code path serves the in-memory double and PostgreSQL, and a record
-only enters a metric when it carries the fields that metric needs.
-Partial outcomes count for what they recorded and are excluded,
-visibly, from what they did not.
+Everything here is a pure function over case records (the learning
+section also reads the store's history entries when the caller
+passes them) — the same code path serves the in-memory double and
+PostgreSQL, and a record only enters a metric when it carries the
+fields that metric needs. Partial outcomes count for what they
+recorded and are excluded, visibly, from what they did not.
 """
 
 from __future__ import annotations
 
-from .schemas import EXIT_CONVERGED, OUTCOME_DECISIONS, CaseResult
+from .schemas import EXIT_CONVERGED, OUTCOME_DECISIONS, CaseResult, HistoryEntry
 
 EMPTY_NOTE = (
     "no supervisor outcomes recorded yet — record one via "
     "POST /api/cases/{case_id}/outcome to start measuring diagnosis quality"
+)
+
+NO_REPEATS_NOTE = (
+    "no repeat-fault cases yet — no scored case so far matches a machine + "
+    "fault a supervisor had already confirmed on an earlier case"
 )
 
 
@@ -40,7 +53,71 @@ def _mean(values: list[float]) -> float | None:
     return round(sum(values) / len(values), 4) if values else None
 
 
-def diagnosis_stats(records: list[CaseResult]) -> dict:
+def _learning_loop(
+    records: list[CaseResult],
+    scored: list[CaseResult],
+    top1_accuracy: float | None,
+    history_entries: list[HistoryEntry] | None,
+) -> dict:
+    """The learning-loop section: write-backs + repeat-fault scoring.
+
+    A *repeat* case is a scored case whose machine + confirmed
+    fault a supervisor had already confirmed on an earlier case
+    (records are read in record order — created, then case id — so
+    "earlier" is the plant's own chronology, and a case never
+    counts as its own precedent). The write-back counts come from
+    the store's history entries when the caller passes them; the
+    pure-records call derives the same counts from the confirmed
+    outcomes themselves, since every recorded confirmation writes
+    exactly one entry.
+    """
+    if history_entries is not None:
+        written_back = len(history_entries)
+        by_machine: dict[str, int] = {}
+        for entry in history_entries:
+            by_machine[entry.machine_id] = by_machine.get(entry.machine_id, 0) + 1
+    else:
+        confirmed_records = [
+            r for r in records if r.outcome is not None and r.outcome.confirmed_fault
+        ]
+        written_back = len(confirmed_records)
+        by_machine = {}
+        for r in confirmed_records:
+            by_machine[r.machine_id] = by_machine.get(r.machine_id, 0) + 1
+
+    seen: set[tuple[str, str]] = set()
+    repeat_ids: set[str] = set()
+    timeline = sorted(
+        (r for r in records if r.outcome is not None and r.outcome.confirmed_fault),
+        key=lambda r: (r.created_at or "", r.case_id),
+    )
+    for r in timeline:
+        key = (r.machine_id, r.outcome.confirmed_fault)
+        if key in seen:
+            repeat_ids.add(r.case_id)
+        seen.add(key)
+    repeats = [r for r in scored if r.case_id in repeat_ids]
+    repeat_correct = sum(
+        1
+        for r in repeats
+        if r.diagnosis.hypotheses[0].fault_class == r.outcome.confirmed_fault
+    )
+    return {
+        "confirmed_written_back": written_back,
+        "written_back_by_machine": dict(sorted(by_machine.items())),
+        "repeat_cases": len(repeats),
+        "repeat_top1_correct": repeat_correct,
+        "repeat_top1_accuracy": (
+            round(repeat_correct / len(repeats), 4) if repeats else None
+        ),
+        "overall_top1_accuracy": top1_accuracy,
+        "note": "" if repeats else NO_REPEATS_NOTE,
+    }
+
+
+def diagnosis_stats(
+    records: list[CaseResult], history_entries: list[HistoryEntry] | None = None
+) -> dict:
     """Aggregate the outcome-carrying records into accuracy stats."""
     with_outcome = [r for r in records if r.outcome is not None]
     # A record scores on diagnosis only when a fault was confirmed
@@ -117,6 +194,8 @@ def diagnosis_stats(records: list[CaseResult]) -> dict:
         if r.outcome.downtime_minutes_actual is not None and r.plan.steps
     ]
 
+    top1_accuracy = round(top1_correct / len(scored), 4) if scored else None
+
     return {
         "available": bool(with_outcome),
         "note": "" if with_outcome else EMPTY_NOTE,
@@ -125,9 +204,8 @@ def diagnosis_stats(records: list[CaseResult]) -> dict:
         "fault_scored": len(scored),
         "confirmed_without_diagnosis": confirmed_no_diagnosis,
         "top1_correct": top1_correct,
-        "top1_accuracy": (
-            round(top1_correct / len(scored), 4) if scored else None
-        ),
+        "top1_accuracy": top1_accuracy,
+        "learning_loop": _learning_loop(records, scored, top1_accuracy, history_entries),
         "top2_correct": top2_correct,
         "top2_accuracy": (
             round(top2_correct / len(scored), 4) if scored else None
