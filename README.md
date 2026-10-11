@@ -80,7 +80,7 @@ Every round call is validated against a strict schema with one bounded retry; a 
 
 ## Evals
 
-`make evals` runs the golden loop pack — 41 authored entries against the offline backend, hermetic and deterministic:
+`make evals` runs the golden loop pack — 42 authored entries against the offline backend, hermetic and deterministic:
 
 - **20 case cases**: expected diagnosis class, exit reason, rounds used, draft kind, and verify-stage substitution records — including the two-round convergence (a bearing fault the first round can't yet separate from a tool imbalance, separated by a discriminating check in round 2), the round-0 safety stop, the skip-lockout injection, a substitute that converges (twice: a coolant filter, a packaging film), a substitute rejected on its rating that still escalates with the reason on record, and an honest `exhausted` for a fault with no SOP.
 - **3 defect cases**: deliberately defective planners — one drops safety steps, one names an unstocked part, one proposes bypassing an interlock — and the verify round must catch each (never converge, blocked, safety stop respectively). This is gap-recall, tested against the failure modes the loop exists for.
@@ -91,8 +91,23 @@ Every round call is validated against a strict schema with one bounded retry; a 
 - **4 economics cases**: the board priced at the plant model's rates, with expected dollars hand-computed from the KB — a two-case rated board (exposure per case and in total, largest named), a lone case on the unrated Utilities line (minutes present, dollars null), a $7,200 maintenance alert entered ahead of a $633 line-down case that the board must still work *first* (exposure never reorders), and cost accuracy against recorded actuals, per line and plant-wide, with the unrated case counted in the minutes and never in the dollars.
 - **2 carryover cases**: two board runs and the turnover between them. Run 1 ends on the case budget with one case converged-then-decided-and-done, one converged and still waiting, one blocked on the winner's claim, one never worked; run 2 accepts the carry-over — the blocked case resumes with its rounds intact and takes the belt the finished case's released claim freed, the waiting case's claim is renewed with its provenance stamped, and the plant still counts four cases, not five. The second case drops a carried case at acceptance: the drop is on the record, its claim is released, and the case it was blocking converges on the freed part.
 - **3 PM cases**: the preventive-maintenance story end to end. A machine crossing the recurrence threshold drafts a proposal citing its evidence with the interval arithmetic on the record; approval at an *edited* interval creates the obligation, clocked from a supervisor-declared last-performed date; a later board surfaces the cycle case, the supervisor's outcome closes the cycle, and the next due point is the performed moment plus the approved interval — after which the board is silent. The second case rejects a proposal and pins the watermark: one more fault drafts nothing, a fresh threshold re-earns a proposal citing only the fresh cases. The third runs two faults and asserts the silence: no proposal, no obligation, no watch item.
+- **1 gate case**: the reasoner regression gate (below), exercised end to end inside the pack — the offline baseline and the shipped stub candidate both drive the gate's fixed suite, and the comparison must PASS with exactly the stub's two deliberate differences showing and no safety-pin violation on either record.
 
-Gate: ≥95% overall. Current: **41/41**. Plus 181 pytest tests — loop-controller units with scripted critiques (converge r1/r2, exhaust, budget, safety), the verify-stage substitution branches (applied, rejected on rating, none listed, a planner's unverified substitute claim stripped), the board-level allocation (contention, gate release, the substitute search over effective stock, safety cases never claiming), the shift carry-over (the computed manifest, resume with rounds intact, claim renewal and the run-ended release, drops at acceptance, safety cases carried as records and never re-worked, inheritance chaining), the preventive-maintenance layer (the interval arithmetic and its clamps, the watermark, both obligation clocks, due cases firing once per cycle, deferrals and the reasonless-deferral refusal), the work-order packet contents and its refusals, the confirmed-fault write-back (per-decision behaviour, idempotency, the safety-stop refusal, the merged history's markings), the Muse adapters against stubbed transports (request shaping + reasoning continuity), guardrails, priority, the service and API, and hand-computed fixtures for the outcome stats, the learning-loop stats, the downtime economics, the handoff and the watch — with 2 Postgres-gated tests that skip without a database.
+Gate: ≥95% overall. Current: **42/42**. Plus 194 pytest tests — loop-controller units with scripted critiques (converge r1/r2, exhaust, budget, safety), the verify-stage substitution branches (applied, rejected on rating, none listed, a planner's unverified substitute claim stripped), the board-level allocation (contention, gate release, the substitute search over effective stock, safety cases never claiming), the shift carry-over (the computed manifest, resume with rounds intact, claim renewal and the run-ended release, drops at acceptance, safety cases carried as records and never re-worked, inheritance chaining), the preventive-maintenance layer (the interval arithmetic and its clamps, the watermark, both obligation clocks, due cases firing once per cycle, deferrals and the reasonless-deferral refusal), the reasoner regression gate (the harness's determinism against the committed baseline, the stub candidate's PASS, and every FAIL path: pin violations, exit regressions, the agreement floor, a short suite), the work-order packet contents and its refusals, the confirmed-fault write-back (per-decision behaviour, idempotency, the safety-stop refusal, the merged history's markings), the Muse adapters against stubbed transports (request shaping + reasoning continuity), guardrails, priority, the service and API, and hand-computed fixtures for the outcome stats, the learning-loop stats, the downtime economics, the handoff and the watch — with 2 Postgres-gated tests that skip without a database.
+
+### The reasoner regression gate: swapping models is a gated act
+
+The loop's value lives in its reasoner, and providers change models constantly — a new Muse Spark point release, a cheaper fallback, a surface change. Swapping used to mean hoping; now it is a gate (`regression.py`, runner `evals/run_gate.py`):
+
+- **Fixed suite, named configuration.** The gate drives the golden pack's 20 case entries — safety cases included — through one reasoner configuration (backend + model + surface, stamped on the record). Model calls are counted at the port; each case records its exit, rounds, top diagnosis, tokens and the two safety pins. The offline backend's record is the committed baseline (`evals/gate/baseline-offline.json`, served at `/evals/gate-baseline`).
+- **A mechanical verdict.** `compare` diffs two records in code against criteria authored in one place, evaluated in order: the suite is whole → **safety pins** (a safety case that received any model call, or a converged plan missing a mandatory safety step, fails outright — safety is a criterion, not a metric) → **exit regressions** against a printed severity order (`converged > blocked_external > budget_exceeded > exhausted > safety_stop`) → **diagnosis agreement** ≥ 90%. Improvements and round/call deltas are reported, never gated.
+- **The exercise partner.** A shipped stub candidate (`stubs.py`, labelled, and deliberately *not* selectable through `REASONING_BACKEND`) differs from the baseline by exactly one diagnosis (G14) and one extra round (G20): the gate PASSes it at 95% agreement, which is what a good swap looks like. Pin-breaking candidates are constructed in the tests only — a profile whose purpose is breaking safety is not shipped anywhere.
+
+```bash
+uv run python evals/run_gate.py run --backend stub --out evals/gate/candidate.json
+uv run python evals/run_gate.py compare evals/gate/baseline-offline.json evals/gate/candidate.json
+uv run python evals/run_gate.py check --backend muse   # a live swap, gated before it is trusted
+```
 
 ## Closing the loop: outcomes
 
@@ -150,7 +165,7 @@ Proposals and obligations are at `GET /api/pm/proposals` and `GET /api/pm/obliga
 
 ## Honest status
 
-- **Muse Spark adapters are built to Meta's documented API and unit-tested against stubbed transports** (Chat Completions request shape; Responses shape; the round-1 encrypted reasoning item verifiably rides along on round 2). **Live verification is pending a Model API key** — no live call to `api.meta.ai` has been made from this repo yet, and nothing here claims otherwise. The offline backend runs the identical loops today.
+- **Muse Spark adapters are built to Meta's documented API and unit-tested against stubbed transports** (Chat Completions request shape; Responses shape; the round-1 encrypted reasoning item verifiably rides along on round 2). **Live verification is pending a Model API key** — no live call to `api.meta.ai` has been made from this repo yet, and nothing here claims otherwise. The offline backend runs the identical loops today. When a key lands, the first live run does not go straight to the board: it goes through the reasoner regression gate (`evals/run_gate.py check --backend muse`, on each surface) against the committed offline baseline, and the profile is trusted only on a PASS — that gate is the promotion path, not a formality after it.
 - **Docker/compose not run in the build sandbox** (no daemon); the topology mirrors the sibling blueprints' verified compose stacks, and the Dockerfile builds from the same frozen constraints. First `docker compose up --build` on a real machine is the check.
 - **PostgreSQL paths are covered by gated tests** that skip without `TEST_DATABASE_URL`; they ran against the doubles everywhere else.
 - The offline backend is a rules engine, not a model: its diagnoses are only as good as the SOP thresholds in the synthetic KB. It exists so the loops can be evaluated deterministically — swap in `muse` or `llm` for real reasoning.
@@ -178,18 +193,20 @@ src/plant_loop/
   handoff.py      the shift handoff report, composed in code (JSON + text)
   reliability.py  the recurring-fault watch: reliability_review board items
   pm.py           preventive maintenance: proposals, obligations, cycles
+  regression.py   the reasoner regression gate: suite runs, record diffs, verdicts
+  stubs.py        labelled stub reasoner profiles for the gate (never selectable in production)
   store.py        record stores: PostgreSQL / in-memory double
   service.py      runs the graphs, owns persistence and the gate
   api.py          FastAPI transport + the single-file console
-  data/           kb.json, sample_cases.json (the seeded board), eval_results.json
+  data/           kb.json, sample_cases.json (the seeded board), eval_results.json, gate_baseline.json
 migrations/       numbered SQL (records, board runs, errors, pgvector KB index, board items, history entries, part claims, PM records)
-evals/            golden.jsonl (41 entries) + run_evals.py (the gate)
+evals/            golden.jsonl (42 entries) + run_evals.py (the golden gate) + run_gate.py (the reasoner gate) + gate/ (the committed baseline record)
 tests/            pytest suite
 ```
 
 ## Extension seams
 
-- **New reasoning backend**: implement the three-method `Reasoner` protocol and register it in `backends.get_reasoner` — the loops never see the difference.
+- **New reasoning backend**: implement the three-method `Reasoner` protocol and register it in `backends.get_reasoner` — the loops never see the difference. Then gate it: `evals/run_gate.py check` against the committed baseline before the profile is trusted with a board.
 - **Real plant systems**: replace `KBRetriever` (SOPs/history/inventory reads) and the `Store`/`ObjectStore` implementations behind their ports; keep the controllers.
 - **Loop policy**: rounds, budgets and the priority weights live in `loops.py`/`priority.py` config, not scattered through the graph.
 - **Actuation**: deliberately absent. If a deployment ever connects the gate's approval to a CMMS work-order API, that integration belongs behind the supervisor's decision — the agent's boundary does not move.
