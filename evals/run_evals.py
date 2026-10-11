@@ -1,6 +1,6 @@
 """Golden loop eval: known cases in, loop behaviour checked.
 
-Thirty-eight entries — twenty cases with authored expectations
+Forty-one entries — twenty cases with authored expectations
 (per-case diagnosis class, exit reason, rounds used, draft kind,
 open gaps, verify-stage substitution records), three *defect* cases
 (a deliberately defective planner that drops safety steps, names an
@@ -32,7 +32,15 @@ and takes the belt a decided-and-done case's released claim
 freed, a waiting case's claim renewed with its provenance
 stamped — and a carried case dropped at acceptance, audited,
 its claim released, the case it blocked converging on the freed
-part). Every case
+part), and three *pm* entries (from watch to work: a machine
+crossing the recurrence threshold drafts a PM proposal citing its
+evidence with the interval arithmetic on the record; approval at
+an edited interval creates the obligation, a later board surfaces
+its cycle case, and the supervisor's outcome closes the cycle
+with the next due point computed — while a rejected proposal's
+evidence is spent (the watermark) until a fresh threshold of
+faults re-earns a draft, and two faults draft nothing at all).
+Every case
 runs the full pipeline through a fresh service on the
 deterministic offline backend, so the gate is hermetic:
 ``uv run python evals/run_evals.py`` exits non-zero below the gate.
@@ -63,6 +71,7 @@ from plant_loop.schemas import (  # noqa: E402
     PlanStep,
     SupervisorOutcome,
 )
+from plant_loop.reliability import parse_timestamp  # noqa: E402
 from plant_loop.service import PlantService  # noqa: E402
 from plant_loop.stats import diagnosis_stats  # noqa: E402
 from plant_loop.store import InMemoryStore  # noqa: E402
@@ -580,6 +589,124 @@ def run_carryover_entry(entry: dict) -> list[str]:
     return failures
 
 
+def run_pm_entry(entry: dict) -> list[str]:
+    """Preventive maintenance, proven end to end (pm.py).
+
+    Steps run in order against one fresh service: ``run_cases``
+    works cases through their loops; ``decide`` records the
+    supervisor's decision on the pair's open proposal; ``board``
+    runs an empty board (any case it works is one an obligation
+    sent); ``outcome_on_pm_case`` records the supervisor's
+    outcome on the cycle case the last board surfaced. After any
+    step, ``check`` asserts against the PM records as they stand:
+    proposal counts, the latest proposal's cited evidence /
+    interval / status, the standing obligation's interval / due
+    point / basis / cycle state, and the last board's PM cases.
+    """
+    service = fresh_service()
+    failures: list[str] = []
+    state: dict = {"board": None, "pm_case_id": ""}
+
+    def check(spec: dict, where: str) -> None:
+        proposals = service.pm_proposals()
+        proposal = proposals[-1] if proposals else None
+        obligations = service.pm_obligations()
+        obligation = obligations[-1] if obligations else None
+        for key, want in spec.items():
+            if key == "proposals_total":
+                got = len(proposals)
+            elif key == "proposals_proposed":
+                got = len([p for p in proposals if p.status == "proposed"])
+            elif key == "obligations_total":
+                got = len(obligations)
+            elif key == "reliability_items":
+                got = len([i for i in service.board_items() if i.status == "open"])
+            elif key == "proposal_evidence":
+                got = [e["case_id"] for e in proposal.evidence] if proposal else None
+            elif key == "proposal_interval":
+                got = proposal.proposed_interval_days if proposal else None
+            elif key == "proposal_clamped":
+                got = proposal.clamped if proposal else None
+            elif key == "proposal_status":
+                got = proposal.status if proposal else None
+            elif key == "proposal_board_item_linked":
+                items = {i.item_id for i in service.board_items() if i.status == "open"}
+                got = bool(proposal and proposal.board_item_id in items)
+            elif key == "obligation_interval":
+                got = obligation.interval_days if obligation else None
+            elif key == "obligation_next_due":
+                got = obligation.next_due_at if obligation else None
+            elif key == "obligation_basis":
+                got = obligation.clock_basis if obligation else None
+            elif key == "obligation_cycles":
+                got = obligation.cycles_completed if obligation else None
+            elif key == "obligation_cycle_open":
+                got = bool(obligation and obligation.cycle_case_id)
+            elif key == "obligation_due_days_after_performed":
+                if obligation and obligation.last_performed_at and obligation.next_due_at:
+                    got = (
+                        parse_timestamp(obligation.next_due_at)
+                        - parse_timestamp(obligation.last_performed_at)
+                    ).days
+                else:
+                    got = None
+            elif key == "board_pm_cases":
+                got = len(state["board"].pm_cases) if state["board"] else None
+            elif key in ("pm_case_type", "pm_case_status", "pm_case_exit"):
+                record = (
+                    service.get_record(state["pm_case_id"]) if state["pm_case_id"] else None
+                )
+                got = (
+                    {
+                        "pm_case_type": record.type,
+                        "pm_case_status": record.status,
+                        "pm_case_exit": record.exit_reason,
+                    }[key]
+                    if record
+                    else None
+                )
+            else:
+                failures.append(f"{where}: unknown check {key!r}")
+                continue
+            if got != want:
+                failures.append(f"{where}.{key}: expected {want!r}, got {got!r}")
+
+    for index, step in enumerate(entry["steps"]):
+        where = f"step {index + 1}"
+        if "run_cases" in step:
+            for payload in step["run_cases"]:
+                service.run_case(ExceptionCase.model_validate(payload))
+        if "decide" in step:
+            spec = step["decide"]
+            open_proposals = [p for p in service.pm_proposals() if p.status == "proposed"]
+            if not open_proposals:
+                failures.append(f"{where}: decide with no open proposal")
+            else:
+                service.decide_pm_proposal(
+                    open_proposals[-1].proposal_id,
+                    spec["decision"],
+                    by=spec.get("by", ""),
+                    reason=spec.get("reason", ""),
+                    interval_days=spec.get("interval_days"),
+                    last_performed_at=spec.get("last_performed_at", ""),
+                )
+        if "board" in step:
+            state["board"] = service.run_board([])
+            if state["board"].pm_cases:
+                state["pm_case_id"] = state["board"].pm_cases[0]
+        if "outcome_on_pm_case" in step:
+            if not state["pm_case_id"]:
+                failures.append(f"{where}: outcome with no PM case surfaced")
+            else:
+                service.record_outcome(
+                    state["pm_case_id"],
+                    SupervisorOutcome.model_validate(step["outcome_on_pm_case"]),
+                )
+        if "check" in step:
+            check(step["check"], where)
+    return failures
+
+
 def main() -> int:
     entries = load_cases()
     results = []
@@ -597,6 +724,8 @@ def main() -> int:
             failures = run_economics_entry(entry)
         elif entry["kind"] == "carryover":
             failures = run_carryover_entry(entry)
+        elif entry["kind"] == "pm":
+            failures = run_pm_entry(entry)
         else:
             failures = run_case_entry(entry)
         ok = not failures
