@@ -281,6 +281,44 @@ class HistoryEntry(BaseModel):
     resolution: str = ""
 
 
+class PartClaim(BaseModel):
+    """One case's claim on a shelf part, made when its plan converged.
+
+    The board shares one shelf. Before round 5, each case's verify
+    stage measured that shelf as if the case were alone on it: two
+    cases could both plan around the same last unit, both converge,
+    and the floor discovered the conflict at the workbench. Now a
+    converged plan *claims* the quantities it will draw (the
+    substitute's quantity, when the plan runs on a substitute), in
+    board-run order — which is priority order by construction — and
+    later cases in the run (and every later run) measure the shelf
+    net of outstanding claims.
+
+    A claim is a planning reservation on the record, nothing more:
+    it is not a warehouse transaction, it draws no stock, and it
+    says nothing about work performed. It ends in exactly one of
+    two ways: the supervisor approves the case at the gate (the
+    claim stands — the approved work order will draw the part), or
+    the supervisor rejects it, and the claim is released back to
+    the pool for *future* runs, stamped with who released it and
+    why. A release never rewrites the finished run it came from —
+    runs are records; a case that lost a part to a claim keeps its
+    blocked record until a fresh run re-plans it.
+    """
+
+    claim_id: str  # claim-<case_id>-<part_id drawn>
+    run_id: str = ""  # the board run that produced the case, or "single"
+    case_id: str = ""
+    part_id: str = ""  # the part actually drawn (the substitute, when substituted)
+    original_part_id: str = ""  # the requirement's part, when a substitute is drawn
+    qty: int = 1
+    status: str = "claimed"  # claimed | released
+    claimed_at: str = ""
+    released_at: str = ""
+    released_by: str = ""
+    release_reason: str = ""  # released_by_gate_rejection
+
+
 class TraceStep(BaseModel):
     name: str
     title: str
@@ -328,6 +366,9 @@ class BoardRunResult(BaseModel):
     processed: list[str] = Field(default_factory=list)  # case ids, in worked order
     exits: dict[str, str] = Field(default_factory=dict)  # case_id -> exit reason
     remaining: list[dict] = Field(default_factory=list)  # [{case_id, reason}]
+    # The allocation ledger for this run: the part claims its
+    # converged cases made, with their standing (allocation.py).
+    allocations: list[PartClaim] = Field(default_factory=list)
     handoff_summary: str = ""
     telemetry: CaseTelemetry = Field(default_factory=CaseTelemetry)
     created_at: str = ""

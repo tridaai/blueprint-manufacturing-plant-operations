@@ -37,7 +37,16 @@ if TYPE_CHECKING:  # annotation-only imports (no runtime cycles)
     from .events import RunEvent
     from .store import CaseRecord
 
-from .schemas import ActionPlan, BoardItem, Critique, Diagnosis, ExceptionCase, Gap, HistoryEntry
+from .schemas import (
+    ActionPlan,
+    BoardItem,
+    Critique,
+    Diagnosis,
+    ExceptionCase,
+    Gap,
+    HistoryEntry,
+    PartClaim,
+)
 
 
 @dataclass
@@ -146,6 +155,10 @@ class Store(Protocol):
     def save_history_entry(self, entry: "HistoryEntry") -> None: ...
 
     def all_history_entries(self) -> list["HistoryEntry"]: ...
+
+    def save_part_claim(self, claim: "PartClaim") -> None: ...
+
+    def all_part_claims(self) -> list["PartClaim"]: ...
 
     def save_error(self, entry: dict) -> None: ...
 

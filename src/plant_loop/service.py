@@ -31,6 +31,7 @@ from . import handoff as handoff_module
 from . import history as history_module
 from . import packet as packet_module
 from . import stats as stats_module
+from .allocation import AllocationLedger
 from .events import CollectingSink, RunEvent, format_timestamp
 from .graph import CaseRunOutcome, build_board_graph, build_case_graph
 from .loops import BoardPolicy, CaseLoopController, LoopPolicy, ReliabilityPolicy
@@ -68,15 +69,31 @@ class PlantService:
         self.board_policy = board_policy or BoardPolicy.from_env()
         self.reliability_policy = reliability_policy or ReliabilityPolicy.from_env()
         self._case_graphs: dict[int, object] = {}
+        # The allocation ledger over this service's store (round
+        # 5): converged cases claim the parts their plans will
+        # draw, and every parts measurement reads the shelf net of
+        # the claims standing. The run id of the board run in
+        # flight ("" outside one — claims then record "single" and
+        # notes name the claiming run as an earlier one).
+        self.allocation = AllocationLedger(store)
+        self._active_run_id = ""
 
     @property
     def reliability_watch(self) -> ReliabilityWatch:
         return ReliabilityWatch(self.store, self.reliability_policy)
 
     def _persist_case(self, record: CaseResult) -> None:
-        """Save a case that reached the gate, then run the
-        recurring-fault watch over it (reliability.py)."""
+        """Save a case that reached the gate, claim its parts,
+        then run the recurring-fault watch over it (reliability.py).
+
+        The claim lands with the record: it is made here — the one
+        place every gated record passes through, board graph and
+        single runs alike — so the next case worked, in this run or
+        any later one, measures the shelf net of it (allocation.py).
+        Only converged records claim; the ledger refuses the rest.
+        """
         self.store.save_case(record)
+        self.allocation.claim_from_record(record, self._active_run_id or "single")
         self.reliability_watch.check(record)
 
     # -- collaborators ---------------------------------------------------
@@ -103,6 +120,16 @@ class PlantService:
             # write-backs this store has collected (history.py).
             history_provider=lambda machine_id: history_module.merged_history(
                 self.store, machine_id
+            ),
+            # The verify stage reads the shelf through the
+            # allocation ledger: net of every claim standing, with
+            # the claiming case named when a claim causes a
+            # shortfall. The run id is read at call time, so a
+            # controller cached for one board run names claims
+            # correctly in the next.
+            stock_provider=lambda part_id: self.allocation.effective_qty(part_id),
+            claim_note_provider=lambda part_id, needed: self.allocation.note_for(
+                part_id, needed, current_run_id=self._active_run_id
             ),
         )
 
@@ -160,12 +187,19 @@ class PlantService:
         resumed = self._try_resume(case_id, {"decision": decision, "by": by, "reason": reason})
         if resumed is not None:
             self.store.save_case(resumed)
-            return resumed
-        record.decision = decision
-        record.decision_by = by
-        record.decision_reason = reason
-        record.status = "approved" if decision == "approved" else "rejected"
-        self.store.save_case(record)
+            record = resumed
+        else:
+            record.decision = decision
+            record.decision_by = by
+            record.decision_reason = reason
+            record.status = "approved" if decision == "approved" else "rejected"
+            self.store.save_case(record)
+        if record.status == "rejected":
+            # A rejected plan will never draw its parts: its claims
+            # are released back to the pool for future runs, stamped
+            # with the rejection (allocation.py). An approval keeps
+            # the claim standing — the work order will draw them.
+            self.allocation.release_for_case(case_id, by=by)
         return record
 
     def record_outcome(self, case_id: str, outcome: SupervisorOutcome) -> CaseResult:
@@ -245,10 +279,20 @@ class PlantService:
             on_case_result=self._persist_case,
             sink=sink,
         )
-        output = board_graph.invoke(
-            {"run_id": run_id, "queue": [c.model_dump() for c in cases]}
-        )
+        # Claims made while this run works carry its id, and notes
+        # inside the run name its claims as this board's own (the
+        # providers read the id at call time). The graph works its
+        # cases synchronously, so the id is set for exactly the
+        # run's duration.
+        self._active_run_id = run_id
+        try:
+            output = board_graph.invoke(
+                {"run_id": run_id, "queue": [c.model_dump() for c in cases]}
+            )
+        finally:
+            self._active_run_id = ""
         result = BoardRunResult.model_validate(output["board_result"])
+        result.allocations = self.allocation.claims_for_run(run_id)
         payload = result.model_dump()
         payload["cases"] = [self.store.get_case(cid).model_dump() if self.store.get_case(cid) else {}
                             for cid in result.processed]
@@ -291,9 +335,16 @@ class PlantService:
         record = self.store.get_case(case_id)
         if record is None:
             raise KeyError(f"unknown case: {case_id}")
-        payload = packet_module.build_packet(record)
+        payload = packet_module.build_packet(
+            record, claims=self.allocation.claims_for_case(case_id)
+        )
         payload["text"] = packet_module.render_text(payload)
         return payload
+
+    def allocations(self) -> list[dict]:
+        """The allocation ledger as it stands: every claim ever
+        recorded on this store, standing and released alike."""
+        return [claim.model_dump() for claim in self.allocation.all_claims()]
 
     def board_items(self) -> list[BoardItem]:
         return self.store.all_board_items()

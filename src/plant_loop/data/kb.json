@@ -189,7 +189,7 @@
         {"step_id": "align-rollers", "text": "Realign the tracking rollers and re-tension the belt.", "part_id": "", "qty": 0},
         {"step_id": "replace-belt", "text": "If the belt edge is frayed beyond the wear mark, fit belt section BELT-5M.", "part_id": "BELT-5M", "qty": 1}
       ],
-      "required_parts": [],
+      "required_parts": [{"part_id": "BELT-5M", "qty": 1}],
       "substitutes": {},
       "estimated_downtime_min": 60,
       "keywords": ["belt", "tracking", "drift", "roller", "conveyor", "stall"]

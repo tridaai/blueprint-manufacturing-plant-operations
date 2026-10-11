@@ -17,7 +17,11 @@ leaves paperwork:
    cover the required quantity) and against the SOP's constraints
    for the slot (``part_constraints`` — a fan that moves less air
    than the SOP's physics requires is not a substitute, whatever
-   the catalogue calls it).
+   the catalogue calls it). "The shelf" here is the *effective*
+   shelf: the loop passes the allocation ledger's stock view
+   (allocation.py), so a candidate already claimed by an earlier
+   case on the board fails the stock check like any other
+   shortage — with the claiming case named in its reason.
 3. **Replanning.** The first candidate that clears both is applied:
    plan steps are revised onto it, the requirement is satisfied by
    substitute, and a :class:`~plant_loop.schemas.Substitution`
@@ -79,7 +83,12 @@ def constraint_violations(sop: dict | None, part_id: str, candidate_id: str) -> 
 
 
 def evaluate(
-    sop: dict | None, part_id: str, qty: int
+    sop: dict | None,
+    part_id: str,
+    qty: int,
+    *,
+    qty_of=None,
+    note_of=None,
 ) -> tuple[Substitution | None, list[Substitution]]:
     """Walk the slot's compatibility relation for one requirement.
 
@@ -88,6 +97,15 @@ def evaluate(
     candidate considered — rejections first (each with its reason),
     the winner last when there is one. Candidates after a winner are
     not considered; the search stops at the first part that works.
+
+    Stock is read through ``qty_of`` when the caller supplies one —
+    the loop's verify stage passes the allocation ledger's
+    effective view (shelf net of outstanding claims, allocation.py),
+    so a substitute an earlier case on the board has claimed is
+    exactly as unavailable as one the shelf never held, and
+    ``note_of`` names the claiming case in the rejection reason
+    instead of reporting a bare stockout. Unbound, the search reads
+    the shelf itself, as it always has.
     """
     records: list[Substitution] = []
     winner: Substitution | None = None
@@ -101,11 +119,18 @@ def evaluate(
             spec_deltas=[SpecDelta.model_validate(d) for d in entry["spec_deltas"]],
             status="rejected",
         )
-        on_hand = kb.part_qty(candidate)
+        on_hand = qty_of(candidate) if qty_of is not None else kb.part_qty(candidate)
         if on_hand is None:
             record.reason = f"{candidate} is listed as compatible but is not on the parts register"
         elif on_hand < qty:
-            record.reason = f"shelf holds {on_hand} of {candidate}; the plan needs {qty}"
+            note = note_of(candidate, qty) if note_of is not None else ""
+            if note:
+                record.reason = (
+                    f"{note} — effective stock of {candidate} is {on_hand}; "
+                    f"the plan needs {qty}"
+                )
+            else:
+                record.reason = f"shelf holds {on_hand} of {candidate}; the plan needs {qty}"
         else:
             violations = constraint_violations(sop, part_id, candidate)
             if violations:

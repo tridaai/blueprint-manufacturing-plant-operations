@@ -188,6 +188,8 @@ class CaseLoopController:
         policy: LoopPolicy | None = None,
         sink: EventSink | None = None,
         history_provider: Callable[[str], list[dict]] | None = None,
+        stock_provider: Callable[[str], int | None] | None = None,
+        claim_note_provider: Callable[[str, int], str] | None = None,
     ) -> None:
         self.reasoner = reasoner
         self.retriever = retriever
@@ -198,6 +200,29 @@ class CaseLoopController:
         # write-backs are in it). Unbound, the controller reads the
         # KB's recorded history alone — never an empty memory.
         self.history_provider = history_provider
+        # Where shelf truth comes from (the service binds it to the
+        # allocation ledger, so every measurement is net of the
+        # claims earlier cases on the board have standing). Unbound,
+        # the controller reads the KB shelf itself — a lone case on
+        # an unshared shelf, as before round 5.
+        self.stock_provider = stock_provider
+        # Names the claiming case when a shortfall is a claim's
+        # doing (allocation.py); unbound, shortfalls are unnamed.
+        self.claim_note_provider = claim_note_provider
+
+    def _effective_qty(self, part_id: str) -> int | None:
+        """Shelf qty as this case may see it: net of claims when a
+        stock provider is bound, the bare shelf when it is not."""
+        if self.stock_provider is not None:
+            return self.stock_provider(part_id)
+        return kb.part_qty(part_id)
+
+    def _claim_note(self, part_id: str, needed: int) -> str:
+        """The allocation note for a shortfall ('' when unbound or
+        when no claim caused it)."""
+        if self.claim_note_provider is not None:
+            return self.claim_note_provider(part_id, needed)
+        return ""
 
     # -- context ------------------------------------------------------------
 
@@ -269,7 +294,11 @@ class CaseLoopController:
         resolved: set[str] = set()
         notes: dict[str, str] = {}
         for req in plan.required_parts:
-            on_hand = kb.part_qty(req.part_id)
+            # Shelf truth is the effective shelf: net of the claims
+            # earlier cases on the board have standing (the stock
+            # provider), so two cases can no longer both measure
+            # the same last unit as available.
+            on_hand = self._effective_qty(req.part_id)
             req.available_qty = on_hand or 0
             req.satisfied = on_hand is not None and on_hand >= req.qty
             # The pass owns the substitute marker too: a planner-set
@@ -281,7 +310,13 @@ class CaseLoopController:
         for req in plan.required_parts:
             if req.satisfied:
                 continue
-            winner, considered = substitution.evaluate(sop, req.part_id, req.qty)
+            winner, considered = substitution.evaluate(
+                sop,
+                req.part_id,
+                req.qty,
+                qty_of=self._effective_qty,
+                note_of=self._claim_note,
+            )
             known = {
                 (s.original_part_id, s.substitute_part_id, s.status)
                 for s in plan.substitutions
@@ -296,7 +331,11 @@ class CaseLoopController:
                 substitution.apply_to_plan(plan, winner)
                 resolved.add(req.part_id)
             else:
-                notes[req.part_id] = substitution.search_summary(req.part_id, considered)
+                summary = substitution.search_summary(req.part_id, considered)
+                note = self._claim_note(req.part_id, req.qty)
+                # A shortfall a claim caused is documented as the
+                # board's own decision, never as a bare stockout.
+                notes[req.part_id] = f"{note} — {summary}" if note else summary
         return records, resolved, notes
 
     def verify_round(self, run: CaseRun) -> None:
@@ -373,7 +412,11 @@ class CaseLoopController:
                 (r for r in run.plan.required_parts if r.part_id == gap.ref), None
             )
             winner, _considered = substitution.evaluate(
-                sop, gap.ref, req.qty if req else 1
+                sop,
+                gap.ref,
+                req.qty if req else 1,
+                qty_of=self._effective_qty,
+                note_of=self._claim_note,
             )
             if winner is None:
                 return gap.ref
