@@ -1,0 +1,109 @@
+# Trida AI Blueprint — Plant Operations Loop Agent
+#
+# The production topology, runnable locally: the API is a stateless
+# container; ALL state lives in PostgreSQL (case records, LangGraph
+# checkpoints, pgvector embeddings) and the S3 bucket (raw case
+# payloads) — the same shape a cloud deployment takes.
+#
+#   docker compose up --build
+#   curl localhost:8000/health
+#   open http://localhost:8000 for the console
+#
+# The store applies the SQL migrations in ./migrations on first
+# connection, so first boot needs no manual schema step. The bucket is
+# created by the `bucket-init` one-shot (and re-checked by the API at
+# startup).
+#
+# Reasoning backend: offline by default (deterministic rules, no
+# keys). Create a .env next to this file (see .env.example) and set
+# REASONING_BACKEND=muse with a MODEL_API_KEY — the pass-through
+# variables below forward it into the container.
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+DATABASE_URL: <redacted>
+      S3_BUCKET: case-payloads
+      S3_ENDPOINT_URL: http://minio:8333
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+      S3_REGION: us-east-1
+      # Pass-through from the host environment / .env (empty = unset,
+      # so the in-image offline defaults hold).
+      REASONING_BACKEND: ${REASONING_BACKEND:-}
+MODEL_API_KEY: <redacted>
+      MODEL_API_BASE_URL: ${MODEL_API_BASE_URL:-}
+      MODEL_SURFACE: ${MODEL_SURFACE:-}
+      MUSE_MODEL: ${MUSE_MODEL:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
+ANTHROPIC_API_KEY: <redacted>
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+OPENAI_API_KEY: <redacted>
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+      EMBEDDER: ${EMBEDDER:-}
+API_KEY: <redacted>
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bucket-init:
+        condition: service_completed_successfully
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: plantops
+POSTGRES_PASSWORD: <redacted>
+      POSTGRES_DB: plantops
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready returns 0 before the server accepts the app role;
+      # an actual query makes "healthy" mean "the API can connect".
+      test: ["CMD-SHELL", "psql -U plantops -d plantops -tAc 'SELECT 1' >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # S3-compatible object storage. SeaweedFS's S3 gateway serves the
+  # `minio` hostname the API config points at (S3_ENDPOINT_URL above);
+  # the production shape only depends on the S3 API, not the vendor.
+  minio:
+    image: chrislusf/seaweedfs:latest
+    command: server -s3 -dir=/data -ip=0.0.0.0
+    volumes:
+      - s3data:/data
+    healthcheck:
+      # SeaweedFS's image is minimal (no curl): probe the S3 port with wget.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8333/"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  bucket-init:
+    image: curlimages/curl:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    # Create the bucket with a plain unsigned PUT: SeaweedFS's S3
+    # gateway accepts bucket creation unauthenticated in this local
+    # topology; against authenticated S3 the API's own signed
+    # ensure-bucket at startup does the same job.
+    entrypoint: ["sh", "-c", "curl -sf -X PUT http://minio:8333/case-payloads || true"]
+
+  # Optional local model server for REASONING_BACKEND=ollama
+  # (start with: docker compose --profile ollama up).
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    volumes:
+      - ollamadata:/root/.ollama
+
+volumes:
+  pgdata:
+  s3data:
+  ollamadata:
