@@ -1,6 +1,6 @@
 {
- "total": 28,
- "passed": 28,
+ "total": 30,
+ "passed": 30,
  "rate": 1.0,
  "gate": 0.95,
  "gate_passed": true,
@@ -171,6 +171,18 @@
   {
    "id": "O2",
    "kind": "outcome",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "L01",
+   "kind": "learning",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "L02",
+   "kind": "learning",
    "passed": true,
    "failures": []
   }

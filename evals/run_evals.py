@@ -1,17 +1,22 @@
 """Golden loop eval: known cases in, loop behaviour checked.
 
-Twenty-eight entries — twenty cases with authored expectations
+Thirty entries — twenty cases with authored expectations
 (per-case diagnosis class, exit reason, rounds used, draft kind,
 open gaps, verify-stage substitution records), three *defect* cases
 (a deliberately defective planner that drops safety steps, names an
 unstocked part, and proposes a banned action), three board cases
-(priority order, case budget, token budget), and two *outcome*
+(priority order, case budget, token budget), two *outcome*
 entries (cases run end to end, supervisor outcomes recorded, the
 live-accuracy stats and the recurring-fault watch asserted — the
-outcome loop measuring itself). Every case runs the full pipeline
-through a fresh service on the deterministic offline backend, so
-the gate is hermetic: ``uv run python evals/run_evals.py`` exits
-non-zero below the gate.
+outcome loop measuring itself), and two *learning* entries (a case
+run, a supervisor outcome recorded, a similar case run against the
+SAME store — the confirmation written back to the machine's
+history is the only difference between the two halves: one entry
+proves the loop closes on what the plant learned, the other proves
+an outcome that confirms nothing teaches nothing). Every case runs
+the full pipeline through a fresh service on the deterministic
+offline backend, so the gate is hermetic:
+``uv run python evals/run_evals.py`` exits non-zero below the gate.
 
 These expectations encode the intended behaviour of the loops as
 designed — a regression gate, not an accuracy claim about any model.
@@ -233,6 +238,47 @@ def run_outcome_entry(entry: dict) -> list[str]:
     return failures
 
 
+def run_learning_entry(entry: dict) -> list[str]:
+    """Baseline case → supervisor outcome → follow-up case, one store.
+
+    The baseline run must show the un-learned behaviour (its own
+    expectations block); the outcome is then recorded (which writes
+    the confirmation back to the machine's history — the entry
+    count is asserted); the follow-up run is checked against the
+    entry's expectations. Both runs share the service's store, so
+    the write-back is the only difference between the halves.
+    """
+    service = fresh_service()
+    baseline = service.run_case(ExceptionCase.model_validate(entry["case"])).result
+    failures = [f"baseline: {f}" for f in check_result({"expected": entry["baseline"]}, baseline)]
+    if "runner_up" in entry["baseline"]:
+        hyps = baseline.diagnosis.hypotheses
+        actual = hyps[1].fault_class if len(hyps) > 1 else ""
+        if actual != entry["baseline"]["runner_up"]:
+            failures.append(
+                f"baseline: runner-up: expected {entry['baseline']['runner_up']}, got {actual}"
+            )
+    if "outcome" in entry:
+        service.record_outcome(
+            entry["case"]["case_id"], SupervisorOutcome.model_validate(entry["outcome"])
+        )
+    written = len(service.store.all_history_entries())
+    if "written_back" in entry["expected"] and written != entry["expected"]["written_back"]:
+        failures.append(
+            f"write-back: expected {entry['expected']['written_back']} history "
+            f"entr(ies), got {written}"
+        )
+    follow = service.run_case(ExceptionCase.model_validate(entry["followup"])).result
+    failures += [f"followup: {f}" for f in check_result(entry, follow)]
+    if entry["expected"].get("evidence_marks_confirmed"):
+        top = follow.diagnosis.top()
+        if not top or not any("supervisor-confirmed" in e for e in top.evidence):
+            failures.append(
+                "followup: the top hypothesis cites no supervisor-confirmed history"
+            )
+    return failures
+
+
 def main() -> int:
     entries = load_cases()
     results = []
@@ -242,6 +288,8 @@ def main() -> int:
             failures = run_board_entry(entry)
         elif entry["kind"] == "outcome":
             failures = run_outcome_entry(entry)
+        elif entry["kind"] == "learning":
+            failures = run_learning_entry(entry)
         else:
             failures = run_case_entry(entry)
         ok = not failures

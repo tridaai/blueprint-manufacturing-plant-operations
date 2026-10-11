@@ -18,6 +18,7 @@ def test_migrations_are_numbered_and_cover_the_schema():
         "0001_case_records.sql",
         "0002_kb_embeddings.sql",
         "0003_board_items.sql",
+        "0004_history_entries.sql",
     ]
     sql = files[0].read_text()
     for table in ("case_records", "board_runs", "run_errors"):
