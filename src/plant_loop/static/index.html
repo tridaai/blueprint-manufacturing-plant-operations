@@ -110,10 +110,24 @@
       </div>
       <div id="board-run"></div>
       <div id="board" class="empty">Loading…</div>
+      <div id="board-items"></div>
+      <h3>Shift handoff</h3>
+      <p class="note">The board as it stands, written for the next shift — composed in code from the records, never by a model.</p>
+      <div class="row" style="margin:10px 0">
+        <button id="handoff-btn">Generate handoff</button>
+        <button id="handoff-copy" disabled>Copy text</button>
+        <span class="note" id="handoff-status"></span>
+      </div>
+      <div id="handoff"></div>
     </section>
     <section>
       <h2>Eval results</h2>
       <div id="evals" class="empty">Loading…</div>
+    </section>
+    <section>
+      <h2>Diagnosis accuracy — live</h2>
+      <p class="note">The loop measured against what supervisors recorded actually happening (the outcome loop), not against authored expectations.</p>
+      <div id="livestats" class="empty">Loading…</div>
     </section>
     <section>
       <h2>How it works</h2>
@@ -138,6 +152,34 @@
         <span class="note" id="gate-status"></span>
       </div>
       <p class="note">Approving records that a supervisor accepted this draft. The system itself issues no commands, marks no work performed, and closes no case — the supervisor takes it from here, outside this tool.</p>
+    </section>
+    <section id="outcome-section" style="display:none">
+      <h2>4 · Record the outcome</h2>
+      <p class="note">What actually happened, once the work is done. This is the ground truth the diagnosis stats and the recurring-fault watch read — it is recorded once and never edited silently.</p>
+      <label for="oc-decision">Plan disposition</label>
+      <select id="oc-decision">
+        <option value="accepted">Accepted — the plan was used as drafted</option>
+        <option value="accepted_with_changes">Accepted with changes</option>
+        <option value="rejected">Rejected — the plan was not used</option>
+      </select>
+      <label for="oc-fault">Confirmed fault (what the floor actually found)</label>
+      <select id="oc-fault"><option value="">— not confirmed / not recorded —</option></select>
+      <label for="oc-work">Work performed</label>
+      <input type="text" id="oc-work" placeholder="e.g. Replaced the spindle bearing set and re-proved runout">
+      <label for="oc-downtime">Actual downtime (minutes)</label>
+      <input type="text" id="oc-downtime" inputmode="numeric" placeholder="optional">
+      <label for="oc-parts">Parts used (comma-separated part ids)</label>
+      <input type="text" id="oc-parts" placeholder="optional">
+      <label for="oc-resolved">Resolved?</label>
+      <select id="oc-resolved">
+        <option value="">— not recorded —</option>
+        <option value="true">Yes</option>
+        <option value="false">No</option>
+      </select>
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="oc-submit">Record outcome</button>
+        <span class="note" id="oc-status"></span>
+      </div>
     </section>
   </div>
 </main>
@@ -233,9 +275,22 @@ function renderResult(r) {
   html += `<h3>Guardrails</h3><ul>` + (r.guardrails.checks || []).map((c) =>
     `<li><span class="${c.passed ? "check-pass" : "check-fail"}">${c.passed ? "PASS" : "FAIL"}</span> ${esc(c.name)} — <span class="note">${esc(c.detail)}</span></li>`).join("") + `</ul>`;
   html += `<h3>Draft (${esc(r.draft.kind || "—")})</h3><pre>${esc(r.draft.text || "")}</pre>`;
+  if (r.outcome) {
+    const o = r.outcome;
+    html += `<h3>Recorded outcome</h3><dl class="kv">
+      <dt>Plan disposition</dt><dd>${esc(o.decision)}${o.recorded_by ? ` — recorded by ${esc(o.recorded_by)}` : ""}</dd>
+      <dt>Confirmed fault</dt><dd>${esc(o.confirmed_fault || "— not recorded —")}</dd>
+      <dt>Work performed</dt><dd>${esc(o.work_performed || "—")}</dd>
+      <dt>Actual downtime</dt><dd>${o.downtime_minutes_actual ?? "—"} min (plan estimated ${r.plan.estimated_downtime_min} min)</dd>
+      <dt>Parts used</dt><dd>${(o.parts_used || []).map(esc).join(", ") || "—"}</dd>
+      <dt>Resolved</dt><dd>${o.resolved === null || o.resolved === undefined ? "—" : o.resolved ? "yes" : "no"}</dd>
+    </dl>`;
+  }
   html += `<p class="note">${esc(r.gate_notice)}</p>`;
   $("result").innerHTML = html;
   $("gate-section").style.display = r.status === "awaiting_supervisor" ? "" : "none";
+  $("outcome-section").style.display = r.outcome ? "none" : "";
+  $("oc-status").textContent = "";
 }
 
 $("analyze").addEventListener("click", async () => {
@@ -262,6 +317,7 @@ async function loadBoard() {
         try { renderResult(await call(`/cases/${tr.dataset.case}`)); } catch (err) { alert(err.message); }
       });
     });
+    loadBoardItems();
   } catch (err) {
     $("board").innerHTML = `<span class="empty">error: ${esc(err.message)}</span>`;
   }
@@ -304,6 +360,103 @@ async function decide(decision) {
 $("approve").addEventListener("click", () => decide("approved"));
 $("reject").addEventListener("click", () => decide("rejected"));
 
+async function loadFaults() {
+  try {
+    const data = await call("/api/fault-classes");
+    $("oc-fault").innerHTML = `<option value="">— not confirmed / not recorded —</option>` +
+      data.fault_classes.map((f) => `<option value="${esc(f)}">${esc(f)}</option>`).join("");
+  } catch (err) { /* the form still works with the empty option */ }
+}
+
+$("oc-submit").addEventListener("click", async () => {
+  if (!current) return;
+  const downtimeRaw = $("oc-downtime").value.trim();
+  const body = {
+    decision: $("oc-decision").value,
+    confirmed_fault: $("oc-fault").value,
+    work_performed: $("oc-work").value.trim(),
+    downtime_minutes_actual: downtimeRaw === "" ? null : Number(downtimeRaw),
+    parts_used: $("oc-parts").value.split(",").map((s) => s.trim()).filter(Boolean),
+    resolved: $("oc-resolved").value === "" ? null : $("oc-resolved").value === "true",
+    by: $("actor").value.trim(),
+  };
+  if (body.downtime_minutes_actual !== null && (!Number.isFinite(body.downtime_minutes_actual) || body.downtime_minutes_actual < 0)) {
+    $("oc-status").textContent = "downtime must be a non-negative number";
+    return;
+  }
+  $("oc-status").textContent = "recording…";
+  try {
+    const record = await call(`/api/cases/${current.case_id}/outcome`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    renderResult(record);
+    $("oc-status").textContent = "outcome recorded";
+    loadLiveStats();
+    loadBoardItems();
+  } catch (err) {
+    $("oc-status").textContent = `error: ${err.message}`;
+  }
+});
+
+async function loadLiveStats() {
+  try {
+    const s = await call("/api/stats/diagnosis");
+    if (!s.available) {
+      $("livestats").innerHTML = `<span class="empty">${esc(s.note)}</span>`;
+      return;
+    }
+    const pct = (v) => (v === null || v === undefined ? "—" : `${Math.round(v * 1000) / 10}%`);
+    let html = `<dl class="kv">
+      <dt>Outcomes recorded</dt><dd>${s.outcomes_recorded} of ${s.cases_total} case(s)</dd>
+      <dt>Top-1 accuracy</dt><dd>${pct(s.top1_accuracy)} (${s.top1_correct}/${s.fault_scored} confirmed)</dd>
+      <dt>Top-2 accuracy</dt><dd>${pct(s.top2_accuracy)}</dd>
+      <dt>Rounds to converge</dt><dd>${s.mean_rounds_to_converge ?? "—"} mean over ${s.converged_confirmed} confirmed convergence(s)</dd>
+      <dt>Plans used</dt><dd>${pct(s.plan_acceptance.used_rate)} (accepted ${s.plan_acceptance.counts.accepted} · with changes ${s.plan_acceptance.counts.accepted_with_changes} · rejected ${s.plan_acceptance.counts.rejected})</dd>
+      <dt>Downtime error</dt><dd>${s.downtime.n ? `mean ${s.downtime.mean_error_min} min · mean abs ${s.downtime.mean_absolute_error_min} min (n=${s.downtime.n})` : "no actuals recorded yet"}</dd>
+    </dl>`;
+    if (s.per_fault_class && s.per_fault_class.length) {
+      html += `<table><tr><th>Fault class</th><th>Precision</th><th>Recall</th><th>TP / pred / actual</th></tr>` +
+        s.per_fault_class.map((r) => `<tr><td>${esc(r.fault_class)}</td><td>${pct(r.precision)}</td><td>${pct(r.recall)}</td><td>${r.tp} / ${r.predicted} / ${r.actual}</td></tr>`).join("") + `</table>`;
+    }
+    $("livestats").innerHTML = html;
+  } catch (err) {
+    $("livestats").textContent = `error: ${err.message}`;
+  }
+}
+
+async function loadBoardItems() {
+  try {
+    const items = await call("/api/board/items");
+    const open = items.filter((i) => i.status === "open");
+    if (!open.length) { $("board-items").innerHTML = ""; return; }
+    $("board-items").innerHTML = `<h3>Reliability review items</h3>` + open.map((i) =>
+      `<div class="banner warn">${esc(i.title)}<br><span class="note">evidence: ${i.case_ids.map(esc).join(", ")} — raised by the recurring-fault watch; it triggers no automatic action.</span></div>`).join("");
+  } catch (err) { /* items are additive; the board still renders */ }
+}
+
+let handoffText = "";
+$("handoff-btn").addEventListener("click", async () => {
+  $("handoff-status").textContent = "composing…";
+  try {
+    const data = await call("/api/board/handoff");
+    handoffText = data.text;
+    $("handoff").innerHTML = `<pre>${esc(data.text)}</pre>`;
+    $("handoff-copy").disabled = false;
+    $("handoff-status").textContent = `composed from the records at ${esc(data.generated_at)}`;
+  } catch (err) {
+    $("handoff-status").textContent = `error: ${err.message}`;
+  }
+});
+$("handoff-copy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(handoffText);
+    $("handoff-status").textContent = "copied — paste it into the shift log";
+  } catch (err) {
+    $("handoff-status").textContent = "copy failed — select the text and copy manually";
+  }
+});
+
 async function loadEvals() {
   try {
     const data = await call("/evals/results");
@@ -314,7 +467,7 @@ async function loadEvals() {
   }
 }
 
-loadSamples().then(loadBoard).then(loadEvals).catch((err) => {
+loadSamples().then(loadBoard).then(loadEvals).then(loadFaults).then(loadLiveStats).then(loadBoardItems).catch((err) => {
   $("board").textContent = `failed to load: ${err.message}`;
 });
 </script>
