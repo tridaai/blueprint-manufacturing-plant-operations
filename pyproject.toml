@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trida-blueprint-manufacturing-plant-operations"
+version = "0.1.0"
+description = "Trida AI Blueprint — Plant Operations Loop Agent (reference prototype)"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10,<3.13"
+# Direct dependencies are pinned EXACTLY (==). Loose >= ranges made pip's
+# resolver backtrack for minutes on Python 3.10 (see constraints.txt header).
+# The full transitive set is frozen in constraints.txt; install with:
+#   pip install -e ".[dev]" -c constraints.txt
+dependencies = [
+    "langgraph==0.6.11",
+    "fastapi==0.143.0",
+    "pydantic==2.14.0",
+    "uvicorn==0.54.0",
+    # Transitive via langchain-core -> langsmith (websockets>=15.0, unbounded).
+    # websockets 17.x requires Python >=3.11. 16.0 supports Python 3.10.
+    "websockets==16.0",
+    "langgraph-checkpoint-postgres==3.0.0",
+    "psycopg[binary]==3.2.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1", "httpx==0.28.1"]
+llm = ["openai==3.27.0", "anthropic==1.13.0"]
+# Vectors live in pgvector (the same PostgreSQL as the records): the SOP /
+# history retrieval needs no extra package — psycopg is a core dependency.
+# Without DATABASE_URL it falls back to an in-memory index behind the
+# same interface (tests and offline demos only).
+
+[project.scripts]
+plant-loop = "plant_loop.cli:main"
+plant-loop-demo = "plant_loop.demo:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+plant_loop = ["data/*.json", "static/*.html", "static/brand/*.png", "static/brand/*.svg", "static/brand/*.ico"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

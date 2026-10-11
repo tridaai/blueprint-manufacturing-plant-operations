@@ -1,0 +1,302 @@
+{
+  "plant": {"name": "Meridian Fabrication, Plant 2", "note": "Fictional plant. All SOPs, histories, parts and readings in this repository are synthetic."},
+  "lines": [
+    {"line_id": "line-a", "name": "Press Line", "criticality": 3},
+    {"line_id": "line-b", "name": "CNC Machining", "criticality": 3},
+    {"line_id": "line-c", "name": "Welding", "criticality": 2},
+    {"line_id": "line-d", "name": "Assembly & Packing", "criticality": 2},
+    {"line_id": "line-e", "name": "Utilities", "criticality": 1}
+  ],
+  "machines": [
+    {"machine_id": "PRESS-1", "name": "Hydraulic Press 1", "line_id": "line-a", "kind": "press"},
+    {"machine_id": "CNC-2", "name": "CNC Machining Centre 2", "line_id": "line-b", "kind": "cnc"},
+    {"machine_id": "CNC-3", "name": "CNC Machining Centre 3", "line_id": "line-b", "kind": "cnc"},
+    {"machine_id": "WELD-4", "name": "MIG Welding Cell 4", "line_id": "line-c", "kind": "welder"},
+    {"machine_id": "CONV-5", "name": "Assembly Conveyor 5", "line_id": "line-d", "kind": "conveyor"},
+    {"machine_id": "PACK-6", "name": "Packing Machine 6", "line_id": "line-d", "kind": "packer"},
+    {"machine_id": "COMP-7", "name": "Air Compressor 7", "line_id": "line-e", "kind": "compressor"}
+  ],
+  "parts": [
+    {"part_id": "BRG-6208", "name": "Spindle bearing 6208-2RS", "qty_on_hand": 2, "location": "Stores B4"},
+    {"part_id": "TOOL-HSK63", "name": "Tool holder HSK63, balanced", "qty_on_hand": 3, "location": "Tool crib 2"},
+    {"part_id": "CLNT-FLT", "name": "Coolant filter cartridge, standard", "qty_on_hand": 0, "location": "Stores B7"},
+    {"part_id": "CLNT-FLT-E", "name": "Coolant filter cartridge, extended-life", "qty_on_hand": 4, "location": "Stores B7"},
+    {"part_id": "SPN-CART", "name": "Spindle cartridge, CNC-2 (vendor exchange)", "qty_on_hand": 0, "location": "Vendor exchange only"},
+    {"part_id": "HYD-SEAL", "name": "Hydraulic seal kit, PRESS-1 ram", "qty_on_hand": 3, "location": "Stores A2"},
+    {"part_id": "TIP-08", "name": "Contact tip 0.8 mm, MIG (pack of 10)", "qty_on_hand": 20, "location": "Weld stores"},
+    {"part_id": "LINER-045", "name": "Wire liner 0.45 m, MIG torch", "qty_on_hand": 2, "location": "Weld stores"},
+    {"part_id": "BELT-5M", "name": "Conveyor belt section, 5 m", "qty_on_hand": 1, "location": "Stores D1"},
+    {"part_id": "FAN-C7", "name": "Cooling fan assembly, COMP-7", "qty_on_hand": 0, "location": "Stores E3"},
+    {"part_id": "AIR-FLT", "name": "Intake air filter, COMP-7", "qty_on_hand": 5, "location": "Stores E3"},
+    {"part_id": "SEAL-BAR", "name": "Heat seal bar, PACK-6", "qty_on_hand": 2, "location": "Stores D4"},
+    {"part_id": "PRT-HEAD", "name": "Thermal print head, label printer", "qty_on_hand": 1, "location": "Stores D4"},
+    {"part_id": "FILM-PKG", "name": "Packing film, 450 mm (roll)", "qty_on_hand": 0, "location": "Stores D6"},
+    {"part_id": "FILM-PKG-B", "name": "Packing film, 450 mm, grade B (roll)", "qty_on_hand": 6, "location": "Stores D6"}
+  ],
+  "sops": [
+    {
+      "sop_id": "SOP-CNC3-BRG", "machine_id": "CNC-3", "fault_class": "spindle_bearing_wear",
+      "title": "Spindle bearing wear — diagnose and replace",
+      "mandatory_safety_steps": [
+        {"step_id": "loto-cnc3", "text": "Lock out and tag out CNC-3 at isolator M-3 and verify zero energy before opening the spindle housing."},
+        {"step_id": "ppe-cnc3", "text": "Wear cut-resistant gloves and eye protection when handling the spindle cartridge and bearings."}
+      ],
+      "diagnostic_checks": [
+        "Spindle vibration above 7.0 mm/s RMS with spindle temperature above 80 C points to bearing wear.",
+        "Rule out tool imbalance first: tool-holder runout above 0.02 mm explains vibration without bearing damage; runout at or below 0.02 mm rules imbalance out."
+      ],
+      "corrective_steps": [
+        {"step_id": "drain-coolant", "text": "Drain the spindle coolant circuit to the bunded container.", "part_id": "", "qty": 0},
+        {"step_id": "replace-bearing", "text": "Remove the spindle nose, press out the worn bearing set and fit replacement bearing BRG-6208.", "part_id": "BRG-6208", "qty": 1},
+        {"step_id": "run-in", "text": "Refit, refill coolant, and run the 20-minute spindle run-in cycle before returning the machine to production.", "part_id": "", "qty": 0}
+      ],
+      "required_parts": [{"part_id": "BRG-6208", "qty": 1}],
+      "substitutes": {},
+      "estimated_downtime_min": 120,
+      "keywords": ["vibration", "bearing", "spindle", "noise", "temperature"]
+    },
+    {
+      "sop_id": "SOP-CNC3-TOOL", "machine_id": "CNC-3", "fault_class": "tool_imbalance",
+      "title": "Tool imbalance — check runout and swap holder",
+      "mandatory_safety_steps": [
+        {"step_id": "loto-cnc3", "text": "Lock out and tag out CNC-3 at isolator M-3 and verify zero energy before opening the spindle housing."}
+      ],
+      "diagnostic_checks": [
+        "Tool-holder runout above 0.02 mm with normal spindle temperature indicates imbalance rather than bearing wear."
+      ],
+      "corrective_steps": [
+        {"step_id": "swap-holder", "text": "Remove the tool holder, clean the taper, and fit balanced holder TOOL-HSK63.", "part_id": "TOOL-HSK63", "qty": 1},
+        {"step_id": "test-cut", "text": "Run a test cut at production speed and confirm vibration is below 4.5 mm/s.", "part_id": "", "qty": 0}
+      ],
+      "required_parts": [{"part_id": "TOOL-HSK63", "qty": 1}],
+      "substitutes": {},
+      "estimated_downtime_min": 35,
+      "keywords": ["runout", "imbalance", "tool", "vibration", "holder"]
+    },
+    {
+      "sop_id": "SOP-CNC3-COOL", "machine_id": "CNC-3", "fault_class": "coolant_system_fault",
+      "title": "Coolant system fault — filter and flow check",
+      "mandatory_safety_steps": [
+        {"step_id": "loto-cnc3", "text": "Lock out and tag out CNC-3 at isolator M-3 and verify zero energy before opening the spindle housing."},
+        {"step_id": "spill-cnc3", "text": "Place spill containment under the coolant filter housing before opening it."}
+      ],
+      "diagnostic_checks": [
+        "Coolant flow below 4 L/min or coolant pressure below 1.2 bar with rising spindle temperature indicates a blocked coolant filter."
+      ],
+      "corrective_steps": [
+        {"step_id": "replace-filter", "text": "Replace the coolant filter cartridge (CLNT-FLT; extended-life CLNT-FLT-E is an approved substitute).", "part_id": "CLNT-FLT", "qty": 1},
+        {"step_id": "flow-check", "text": "Restore flow and confirm coolant flow is at least 8 L/min at the nozzle.", "part_id": "", "qty": 0}
+      ],
+      "required_parts": [{"part_id": "CLNT-FLT", "qty": 1}],
+      "substitutes": {"CLNT-FLT": "CLNT-FLT-E"},
+      "estimated_downtime_min": 45,
+      "keywords": ["coolant", "flow", "filter", "pressure", "overheating"]
+    },
+    {
+      "sop_id": "SOP-CNC2-CART", "machine_id": "CNC-2", "fault_class": "spindle_cartridge_failure",
+      "title": "Spindle cartridge failure — vendor exchange",
+      "mandatory_safety_steps": [
+        {"step_id": "loto-cnc2", "text": "Lock out and tag out CNC-2 at isolator M-2 and verify zero energy before touching the spindle."}
+      ],
+      "diagnostic_checks": [
+        "A seized spindle (will not rotate by hand with the drive isolated) or metallic debris in the spindle nose indicates cartridge failure; there is no in-house repair."
+      ],
+      "corrective_steps": [
+        {"step_id": "fit-cartridge", "text": "Remove the failed cartridge and fit the vendor-exchange cartridge SPN-CART.", "part_id": "SPN-CART", "qty": 1}
+      ],
+      "required_parts": [{"part_id": "SPN-CART", "qty": 1}],
+      "substitutes": {},
+      "estimated_downtime_min": 240,
+      "keywords": ["seized", "cartridge", "spindle", "debris", "vendor"]
+    },
+    {
+      "sop_id": "SOP-PRESS1-HYD", "machine_id": "PRESS-1", "fault_class": "hydraulic_pressure_loss",
+      "title": "Hydraulic pressure loss — ram seal replacement",
+      "mandatory_safety_steps": [
+        {"step_id": "loto-press1", "text": "Lock out and tag out PRESS-1 at the main isolator, dump hydraulic pressure to tank, and verify zero pressure on the gauge before opening any hydraulic fitting."},
+        {"step_id": "block-press1", "text": "Fit the ram safety blocks before working under the raised ram."}
+      ],
+      "diagnostic_checks": [
+        "Ram pressure falling more than 10 percent under a steady load, with oil at the ram gland, indicates seal bypass."
+      ],
+      "corrective_steps": [
+        {"step_id": "replace-seals", "text": "Strip the ram gland and fit seal kit HYD-SEAL.", "part_id": "HYD-SEAL", "qty": 1},
+        {"step_id": "pressure-test", "text": "Refill, bleed air, and hold a 10-minute pressure test at rated load before releasing the press.", "part_id": "", "qty": 0}
+      ],
+      "required_parts": [{"part_id": "HYD-SEAL", "qty": 1}],
+      "substitutes": {},
+      "estimated_downtime_min": 150,
+      "keywords": ["hydraulic", "pressure", "ram", "seal", "leak", "oil"]
+    },
+    {
+      "sop_id": "SOP-WELD4-DRIFT", "machine_id": "WELD-4", "fault_class": "weld_quality_drift",
+      "title": "Weld quality drift (porosity) — gas and consumables check",
+      "mandatory_safety_steps": [
+        {"step_id": "isolate-weld4", "text": "Isolate WELD-4 and allow welded parts to cool before handling; wear welding PPE for any test welds."}
+      ],
+      "diagnostic_checks": [
+        "Porosity above 2 percent of inspected welds points first to shielding-gas flow or a worn contact tip, not to the power source.",
+        "Gas flow below 12 L/min at the torch is below specification for this cell."
+      ],
+      "corrective_steps": [
+        {"step_id": "gas-check", "text": "Measure shielding-gas flow at the torch and restore it to 14-16 L/min; record the regulator reading.", "part_id": "", "qty": 0},
+        {"step_id": "replace-tips", "text": "Fit new contact tips TIP-08 to both torches.", "part_id": "TIP-08", "qty": 1},
+        {"step_id": "test-welds", "text": "Run three test welds and inspect for porosity before releasing the cell to production.", "part_id": "", "qty": 0}
+      ],
+      "required_parts": [{"part_id": "TIP-08", "qty": 1}],
+      "substitutes": {},
+      "estimated_downtime_min": 40,
+      "keywords": ["porosity", "weld", "gas", "quality", "tip", "defects"]
+    },
+    {
+      "sop_id": "SOP-WELD4-FEED", "machine_id": "WELD-4", "fault_class": "wire_feed_fault",
+      "title": "Wire feed fault — liner and drive rolls",
+      "mandatory_safety_steps": [
+        {"step_id": "isolate-weld4", "text": "Isolate WELD-4 and allow welded parts to cool before handling; wear welding PPE for any test welds."}
+      ],
+      "diagnostic_checks": [
+        "Erratic wire feed speed or bird-nesting at the drive rolls indicates a worn or kinked wire liner."
+      ],
+      "corrective_steps": [
+        {"step_id": "replace-liner", "text": "Replace the wire liner with LINER-045 and re-tension the drive rolls.", "part_id": "LINER-045", "qty": 1}
+      ],
+      "required_parts": [{"part_id": "LINER-045", "qty": 1}],
+      "substitutes": {},
+      "estimated_downtime_min": 30,
+      "keywords": ["wire", "feed", "liner", "bird-nesting", "erratic"]
+    },
+    {
+      "sop_id": "SOP-CONV5-BELT", "machine_id": "CONV-5", "fault_class": "belt_tracking_fault",
+      "title": "Belt tracking fault — align and inspect",
+      "mandatory_safety_steps": [
+        {"step_id": "loto-conv5", "text": "Lock out and tag out CONV-5 at the line isolator before reaching into the belt path; keep guards in place while jogging the belt."}
+      ],
+      "diagnostic_checks": [
+        "Belt edge wear on one side with the tracking sensor flagging drift indicates roller misalignment; check motor current — a seized roller also raises drive current."
+      ],
+      "corrective_steps": [
+        {"step_id": "align-rollers", "text": "Realign the tracking rollers and re-tension the belt.", "part_id": "", "qty": 0},
+        {"step_id": "replace-belt", "text": "If the belt edge is frayed beyond the wear mark, fit belt section BELT-5M.", "part_id": "BELT-5M", "qty": 1}
+      ],
+      "required_parts": [],
+      "substitutes": {},
+      "estimated_downtime_min": 60,
+      "keywords": ["belt", "tracking", "drift", "roller", "conveyor", "stall"]
+    },
+    {
+      "sop_id": "SOP-CONV5-MTR", "machine_id": "CONV-5", "fault_class": "motor_overheat",
+      "title": "Drive motor overheat — cooling and load check",
+      "mandatory_safety_steps": [
+        {"step_id": "loto-conv5", "text": "Lock out and tag out CONV-5 at the line isolator before reaching into the belt path; keep guards in place while jogging the belt."}
+      ],
+      "diagnostic_checks": [
+        "Motor casing temperature above 90 C with drive current above rating indicates overload or failed cooling; a current reading is required to separate the two."
+      ],
+      "corrective_steps": [
+        {"step_id": "clean-cooling", "text": "Clean the motor cooling fins and fan cowl; clear any product build-up around the motor.", "part_id": "", "qty": 0},
+        {"step_id": "load-check", "text": "Run the conveyor empty for five minutes and record motor current and casing temperature.", "part_id": "", "qty": 0}
+      ],
+      "required_parts": [],
+      "substitutes": {},
+      "estimated_downtime_min": 50,
+      "keywords": ["motor", "overheat", "temperature", "current", "cooling", "stall"]
+    },
+    {
+      "sop_id": "SOP-COMP7-FAN", "machine_id": "COMP-7", "fault_class": "cooling_fan_failure",
+      "title": "Compressor cooling fan failure — replace fan assembly",
+      "mandatory_safety_steps": [
+        {"step_id": "loto-comp7", "text": "Lock out and tag out COMP-7 and vent the air receiver to zero pressure before opening the compressor enclosure."}
+      ],
+      "diagnostic_checks": [
+        "Discharge temperature climbing above 105 C with the cooling fan not running indicates fan failure; the compressor must not run unloaded-hot for extended periods."
+      ],
+      "corrective_steps": [
+        {"step_id": "replace-fan", "text": "Replace the cooling fan assembly with FAN-C7.", "part_id": "FAN-C7", "qty": 1},
+        {"step_id": "temp-run", "text": "Run the compressor for 15 minutes and confirm discharge temperature settles below 95 C.", "part_id": "", "qty": 0}
+      ],
+      "required_parts": [{"part_id": "FAN-C7", "qty": 1}],
+      "substitutes": {},
+      "estimated_downtime_min": 90,
+      "keywords": ["fan", "temperature", "compressor", "cooling", "discharge", "overheat"]
+    },
+    {
+      "sop_id": "SOP-COMP7-AIR", "machine_id": "COMP-7", "fault_class": "air_pressure_low",
+      "title": "Low discharge pressure — intake filter and leaks",
+      "mandatory_safety_steps": [
+        {"step_id": "loto-comp7", "text": "Lock out and tag out COMP-7 and vent the air receiver to zero pressure before opening the compressor enclosure."}
+      ],
+      "diagnostic_checks": [
+        "Discharge pressure below 6.2 bar with a clogged intake filter (high filter differential) indicates intake restriction."
+      ],
+      "corrective_steps": [
+        {"step_id": "replace-air-filter", "text": "Replace the intake air filter AIR-FLT.", "part_id": "AIR-FLT", "qty": 1},
+        {"step_id": "leak-walk", "text": "Walk the ring main with the ultrasonic leak detector and tag any leaks found.", "part_id": "", "qty": 0}
+      ],
+      "required_parts": [{"part_id": "AIR-FLT", "qty": 1}],
+      "substitutes": {},
+      "estimated_downtime_min": 35,
+      "keywords": ["pressure", "intake", "filter", "discharge", "leak", "air"]
+    },
+    {
+      "sop_id": "SOP-PACK6-SEAL", "machine_id": "PACK-6", "fault_class": "seal_temperature_drift",
+      "title": "Heat-seal temperature drift — seal bar replacement",
+      "mandatory_safety_steps": [
+        {"step_id": "cool-pack6", "text": "Isolate PACK-6 and let the seal bar cool below 40 C before touching the sealing head (burn risk)."}
+      ],
+      "diagnostic_checks": [
+        "Seal strength failures scattered across a shift, with indicated seal temperature swinging more than 15 C, indicate a failing seal-bar element rather than a settings problem."
+      ],
+      "corrective_steps": [
+        {"step_id": "replace-seal-bar", "text": "Replace the heat seal bar with SEAL-BAR and re-run the temperature calibration.", "part_id": "SEAL-BAR", "qty": 1},
+        {"step_id": "seal-tests", "text": "Run twenty test seals and pull-test five before releasing the packer.", "part_id": "", "qty": 0}
+      ],
+      "required_parts": [{"part_id": "SEAL-BAR", "qty": 1}],
+      "substitutes": {},
+      "estimated_downtime_min": 55,
+      "keywords": ["seal", "temperature", "drift", "leaking packs", "quality"]
+    },
+    {
+      "sop_id": "SOP-PACK6-PRINT", "machine_id": "PACK-6", "fault_class": "label_printer_fault",
+      "title": "Label printer fault — print head",
+      "mandatory_safety_steps": [
+        {"step_id": "cool-pack6", "text": "Isolate PACK-6 and let the seal bar cool below 40 C before touching the sealing head (burn risk)."}
+      ],
+      "diagnostic_checks": [
+        "A consistent blank stripe down every label indicates a dead print-head element row."
+      ],
+      "corrective_steps": [
+        {"step_id": "replace-print-head", "text": "Replace the thermal print head with PRT-HEAD and print a test label set.", "part_id": "PRT-HEAD", "qty": 1}
+      ],
+      "required_parts": [{"part_id": "PRT-HEAD", "qty": 1}],
+      "substitutes": {},
+      "estimated_downtime_min": 25,
+      "keywords": ["label", "print", "stripe", "printer", "head"]
+    },
+    {
+      "sop_id": "SOP-MATL-EXP", "machine_id": "", "fault_class": "material_shortage",
+      "title": "Material shortage — confirm, substitute, expedite",
+      "mandatory_safety_steps": [],
+      "diagnostic_checks": [
+        "Confirm the shortage against physical stock, not the system figure alone; check whether an approved substitute material is on the shelf before expediting."
+      ],
+      "corrective_steps": [
+        {"step_id": "confirm-stock", "text": "Physically confirm the stockout at the stores location and record the count.", "part_id": "", "qty": 0},
+        {"step_id": "raise-expedite", "text": "Raise an expedite request against the open purchase order and note the promised time for the shift handover.", "part_id": "", "qty": 0}
+      ],
+      "required_parts": [],
+      "substitutes": {"FILM-PKG": "FILM-PKG-B"},
+      "estimated_downtime_min": 20,
+      "keywords": ["shortage", "stock", "film", "material", "ran out", "expedite"]
+    }
+  ],
+  "history": [
+    {"hist_id": "H-1042", "machine_id": "CNC-3", "fault_class": "spindle_bearing_wear", "date": "2026-08-19", "summary": "Vibration 7.9 mm/s and spindle at 84 C on the morning run; bearing set found scored on strip-down.", "resolution": "Bearing set replaced under SOP-CNC3-BRG; run-in completed.", "downtime_min": 135},
+    {"hist_id": "H-0977", "machine_id": "CNC-3", "fault_class": "tool_imbalance", "date": "2026-07-30", "summary": "Vibration complaint traced to a chipped tool holder; runout measured 0.05 mm.", "resolution": "Holder swapped; vibration back to 3.8 mm/s.", "downtime_min": 30},
+    {"hist_id": "H-1105", "machine_id": "CNC-3", "fault_class": "coolant_system_fault", "date": "2026-09-12", "summary": "Coolant flow fell to 3.1 L/min over a weekend; filter cartridge blinded with swarf fines.", "resolution": "Extended-life filter fitted; flow restored to 9.4 L/min.", "downtime_min": 40},
+    {"hist_id": "H-0880", "machine_id": "PRESS-1", "fault_class": "hydraulic_pressure_loss", "date": "2026-06-22", "summary": "Ram pressure sagged 14 percent under load with oil weeping at the gland.", "resolution": "Seal kit fitted; pressure held on the 10-minute test.", "downtime_min": 160},
+    {"hist_id": "H-1150", "machine_id": "WELD-4", "fault_class": "weld_quality_drift", "date": "2026-09-28", "summary": "Porosity spiked to 5.8 percent after a cylinder change; gas flow at the torch was 9 L/min.", "resolution": "Regulator replaced, flow set to 15 L/min, tips changed; test welds clean.", "downtime_min": 45},
+    {"hist_id": "H-1019", "machine_id": "CONV-5", "fault_class": "belt_tracking_fault", "date": "2026-08-08", "summary": "Belt drifted to the west edge and frayed; two rollers found out of parallel.", "resolution": "Rollers realigned; belt section replaced.", "downtime_min": 75},
+    {"hist_id": "H-0931", "machine_id": "COMP-7", "fault_class": "cooling_fan_failure", "date": "2026-07-11", "summary": "Discharge temperature hit 112 C; fan motor winding open-circuit.", "resolution": "Fan assembly replaced (part had to be ordered; 2 days on reduced load).", "downtime_min": 95},
+    {"hist_id": "H-1120", "machine_id": "PACK-6", "fault_class": "seal_temperature_drift", "date": "2026-09-19", "summary": "Seal failures clustered on night shift; seal bar element resistance out of range.", "resolution": "Seal bar replaced and calibrated; pull tests passed.", "downtime_min": 50}
+  ]
+}
