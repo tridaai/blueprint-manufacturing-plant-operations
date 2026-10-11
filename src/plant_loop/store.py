@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 
+from . import economics as economics_module
 from .config import env_str, load_dotenv
 from .schemas import BoardItem, CaseResult, HistoryEntry, PartClaim
 
@@ -76,24 +77,38 @@ class StoreBase:
         return []
 
     def board(self) -> list[dict]:
-        """Cases waiting at the supervisor gate, in board order."""
+        """Cases waiting at the supervisor gate, in board order.
+
+        Each row also carries the case's downtime economics
+        (economics.py), computed here from the record so the board
+        shows the same figure whatever stamped it: the estimated
+        minutes, and the dollar exposure — None on a line the
+        plant model does not rate, and on a safety stop, which is
+        never priced.
+        """
         waiting = [r for r in self.all_cases() if r.status == "awaiting_supervisor"]
         waiting.sort(key=lambda r: (-r.priority, r.reported_at or "", r.case_id))
-        return [
-            {
-                "case_id": r.case_id,
-                "type": r.type,
-                "title": r.title,
-                "machine_id": r.machine_id,
-                "line_id": r.line_id,
-                "priority": r.priority,
-                "exit_reason": r.exit_reason,
-                "rounds": len(r.rounds),
-                "status": r.status,
-                "reported_at": r.reported_at,
-            }
-            for r in waiting
-        ]
+        rows = []
+        for r in waiting:
+            econ = economics_module.for_record(r)
+            rows.append(
+                {
+                    "case_id": r.case_id,
+                    "type": r.type,
+                    "title": r.title,
+                    "machine_id": r.machine_id,
+                    "line_id": r.line_id,
+                    "priority": r.priority,
+                    "exit_reason": r.exit_reason,
+                    "rounds": len(r.rounds),
+                    "status": r.status,
+                    "reported_at": r.reported_at,
+                    "estimated_minutes": econ.estimated_minutes if econ else None,
+                    "exposure_usd": econ.estimated_usd if econ else None,
+                    "rate_usd_per_hour": econ.rate_usd_per_hour if econ else None,
+                }
+            )
+        return rows
 
     def metrics(self) -> dict:
         records = self.all_cases()

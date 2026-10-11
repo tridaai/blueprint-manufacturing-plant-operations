@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from langgraph.types import Command
 from pydantic import ValidationError
 
+from . import economics as economics_module
 from . import handoff as handoff_module
 from . import history as history_module
 from . import packet as packet_module
@@ -91,7 +92,14 @@ class PlantService:
         single runs alike — so the next case worked, in this run or
         any later one, measures the shelf net of it (allocation.py).
         Only converged records claim; the ledger refuses the rest.
+
+        The economics stamp lands with the record too (economics.py):
+        the case priced from its plan's estimated downtime at its
+        line's plant-model rate, so every surface that reads the
+        record — board, console, handoff — reads the same figure.
+        A safety stop is stamped None: it is never priced.
         """
+        record.economics = economics_module.for_record(record)
         self.store.save_case(record)
         self.allocation.claim_from_record(record, self._active_run_id or "single")
         self.reliability_watch.check(record)
@@ -229,6 +237,10 @@ class PlantService:
         outcome.recorded_at = format_timestamp(datetime.now(timezone.utc))
         entry = history_module.entry_for_record(record, outcome)  # may refuse (safety stop)
         record.outcome = outcome
+        # The actuals join the economics snapshot at the same rate
+        # the estimate was priced at, so estimate and actual dollars
+        # on one record are always the same arithmetic.
+        record.economics = economics_module.for_record(record)
         self.store.save_case(record)
         if entry is not None:
             self.store.save_history_entry(entry)
@@ -293,9 +305,16 @@ class PlantService:
             self._active_run_id = ""
         result = BoardRunResult.model_validate(output["board_result"])
         result.allocations = self.allocation.claims_for_run(run_id)
+        worked = [self.store.get_case(cid) for cid in result.processed]
+        # The run priced as one board: the estimated downtime
+        # exposure its processed cases carry (economics.py), in
+        # board order so the largest exposure names the first such
+        # case the supervisor would meet.
+        result.economics = economics_module.board_summary(
+            [r for r in worked if r is not None]
+        )
         payload = result.model_dump()
-        payload["cases"] = [self.store.get_case(cid).model_dump() if self.store.get_case(cid) else {}
-                            for cid in result.processed]
+        payload["cases"] = [r.model_dump() if r else {} for r in worked]
         self.store.save_board_run(payload)
         return result
 

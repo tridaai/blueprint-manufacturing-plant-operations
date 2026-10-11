@@ -18,6 +18,12 @@ actually happening — the outcome loop:
 - **downtime error** — actual minus estimated downtime over the
   outcomes that recorded an actual: signed mean (bias) and mean
   absolute error (accuracy).
+- **downtime economics** — the same comparison priced (economics.py):
+  estimated vs actual minutes *and* dollars, plant-wide and per
+  line, over the same population. A case on a line the plant model
+  does not rate counts in the minutes and never in the dollars —
+  the section says how many of its cases are minutes-only, and
+  every figure carries its case count beside it.
 - **the learning loop** — what the plant has written back to its
   memory (confirmed faults, by machine) and how the loop scores on
   *repeat* faults: scored cases whose machine + fault a supervisor
@@ -36,6 +42,7 @@ recorded and are excluded, visibly, from what they did not.
 
 from __future__ import annotations
 
+from . import economics as economics_module
 from .schemas import EXIT_CONVERGED, OUTCOME_DECISIONS, CaseResult, HistoryEntry
 
 EMPTY_NOTE = (
@@ -51,6 +58,79 @@ NO_REPEATS_NOTE = (
 
 def _mean(values: list[float]) -> float | None:
     return round(sum(values) / len(values), 4) if values else None
+
+
+def _cost_block(pairs: list[tuple]) -> dict:
+    """Estimated-vs-actual over (estimated_min, actual_min,
+    estimated_usd, actual_usd) tuples — one line's worth, or the
+    plant's. Dollar means run over the rated pairs only; a pair
+    whose line carries no rate has both dollar fields None and
+    counts in the minutes alone."""
+    rated = [p for p in pairs if p[2] is not None]
+    return {
+        "n": len(pairs),
+        "rated_n": len(rated),
+        "minutes_only_n": len(pairs) - len(rated),
+        "estimated_minutes": sum(p[0] for p in pairs),
+        "actual_minutes": sum(p[1] for p in pairs),
+        "mean_error_min": _mean([float(p[1] - p[0]) for p in pairs]),
+        "mean_absolute_error_min": _mean([float(abs(p[1] - p[0])) for p in pairs]),
+        "estimated_usd": (
+            round(sum(p[2] for p in rated), 2) if rated else None
+        ),
+        "actual_usd": (
+            round(sum(p[3] for p in rated), 2) if rated else None
+        ),
+        "mean_error_usd": _mean([p[3] - p[2] for p in rated]),
+        "mean_absolute_error_usd": _mean([abs(p[3] - p[2]) for p in rated]),
+    }
+
+
+def _economics_section(records: list[CaseResult]) -> dict:
+    """Cost accuracy over the downtime population: the outcomes
+    that recorded an actual downtime on a case that carried a plan
+    (the same population the minutes-only ``downtime`` block uses,
+    so the two blocks always describe the same cases)."""
+    population = [
+        r
+        for r in records
+        if r.outcome is not None
+        and r.outcome.downtime_minutes_actual is not None
+        and r.plan.steps
+    ]
+    pairs_by_line: dict[str, list[tuple]] = {}
+    rates: dict[str, float | None] = {}
+    for r in population:
+        econ = economics_module.for_record(r)
+        if econ is None:  # a safety stop has no plan; unreachable guard
+            continue
+        pair = (
+            econ.estimated_minutes,
+            econ.actual_minutes,
+            econ.estimated_usd,
+            econ.actual_usd,
+        )
+        pairs_by_line.setdefault(r.line_id, []).append(pair)
+        rates[r.line_id] = econ.rate_usd_per_hour
+    by_line = []
+    for line_id in sorted(pairs_by_line):
+        block = _cost_block(pairs_by_line[line_id])
+        block = {"line_id": line_id, "rate_usd_per_hour": rates[line_id], **block}
+        by_line.append(block)
+    plant = _cost_block([p for pairs in pairs_by_line.values() for p in pairs])
+    note = ""
+    if not population:
+        note = (
+            "no recorded actuals yet — cost accuracy starts with the "
+            "first outcome that records an actual downtime"
+        )
+    elif plant["minutes_only_n"]:
+        note = (
+            f"{plant['minutes_only_n']} of {plant['n']} case(s) sit on lines "
+            "the plant model does not rate — they count in the minutes "
+            "and never in the dollars"
+        )
+    return {"note": note, "by_line": by_line, **plant}
 
 
 def _learning_loop(
@@ -221,6 +301,7 @@ def diagnosis_stats(
                 [float(abs(e)) for e in downtime_errors]
             ),
         },
+        "economics": _economics_section(records),
         "resolved": {
             "recorded": sum(1 for r in with_outcome if r.outcome.resolved is not None),
             "resolved_true": sum(1 for r in with_outcome if r.outcome.resolved),

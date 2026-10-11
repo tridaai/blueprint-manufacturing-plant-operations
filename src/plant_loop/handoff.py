@@ -16,6 +16,11 @@ current records, for the supervisor handing the plant over:
   machines' history — the memory the next shift's diagnoses start
   from, named so the incoming supervisor knows what the plant has
   newly learned;
+- the board priced in downtime dollars (economics.py): the
+  estimated exposure still open at the gate, the largest single
+  open exposure, and the closed cases' recorded actuals — minutes
+  only on lines the plant model does not rate, and safety stops
+  never priced at all;
 - the latest board run, and — when it was cut by the shift budget —
   what it did not reach.
 
@@ -32,6 +37,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
+from . import economics as economics_module
 from .events import format_timestamp
 from .ports import Store
 from .schemas import (
@@ -139,6 +145,49 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
         )
     ]
 
+    # Downtime economics: the exposure still open at the gate
+    # (the awaiting records, priced as one board in gate order, so
+    # the largest exposure is the first such case the incoming
+    # supervisor meets) and what the closed cases actually cost —
+    # actual minutes from recorded outcomes, priced at the same
+    # plant-model rates, split by rated and unrated lines. Safety
+    # stops contribute nothing: they are never priced (economics.py).
+    open_summary = economics_module.board_summary(waiting)
+    # (Safety stops are excluded before counting, not skipped
+    # mid-sum: for_record returns None for them, and a case the
+    # economics never touch must not leak into the totals either.)
+    closed_pairs = [
+        (r, economics_module.for_record(r))
+        for r in records
+        if r.outcome is not None and r.outcome.downtime_minutes_actual is not None
+    ]
+    closed_pairs = [(r, e) for r, e in closed_pairs if e is not None]
+    closed_records = [r for r, _e in closed_pairs]
+    closed_rated_usd = 0.0
+    closed_rated_n = 0
+    closed_minutes_only = 0
+    closed_unrated_minutes = 0
+    for _r, econ in closed_pairs:
+        if econ.actual_usd is None:
+            closed_minutes_only += 1
+            closed_unrated_minutes += econ.actual_minutes or 0
+        else:
+            closed_rated_n += 1
+            closed_rated_usd += econ.actual_usd
+    economics = {
+        "open": open_summary.model_dump(),
+        "closed": {
+            "cases_with_actuals": len(closed_records),
+            "actual_minutes": sum(
+                r.outcome.downtime_minutes_actual for r in closed_records
+            ),
+            "rated_cases": closed_rated_n,
+            "actual_usd": round(closed_rated_usd, 2) if closed_rated_n else None,
+            "minutes_only_cases": closed_minutes_only,
+            "unrated_minutes": closed_unrated_minutes,
+        },
+    }
+
     runs = store.all_board_runs()
     last_run = None
     if runs:
@@ -179,6 +228,7 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
         "safety_stops": safety_stops,
         "reliability_items": reliability_items,
         "confirmed_faults": confirmed_faults,
+        "economics": economics,
         "last_board_run": last_run,
     }
 
@@ -249,6 +299,46 @@ def render_text(handoff: dict) -> str:
             )
     else:
         lines.append("  (none yet — no supervisor outcome has confirmed a fault)")
+    econ = handoff["economics"]
+    open_e, closed = econ["open"], econ["closed"]
+    lines += ["", "DOWNTIME ECONOMICS (estimates priced at the plant model's line rates):"]
+    if open_e["estimated_exposure_usd"] is not None:
+        text = (
+            f"  Open at the gate: ~${open_e['estimated_exposure_usd']:,.2f} of "
+            f"estimated exposure over {open_e['estimated_minutes']} min"
+        )
+        if open_e["unrated_minutes"]:
+            text += (
+                f" ({open_e['unrated_minutes']} of those minutes on lines "
+                "the plant model does not rate — minutes only)"
+            )
+        lines.append(text)
+        lines.append(
+            f"  Largest open exposure: {open_e['largest_exposure_case_id']} — "
+            f"${open_e['largest_exposure_usd']:,.2f}"
+        )
+    elif open_e["estimated_minutes"]:
+        lines.append(
+            f"  Open at the gate: {open_e['estimated_minutes']} min estimated — "
+            "all on lines the plant model does not rate (minutes only, no dollars)"
+        )
+    else:
+        lines.append("  Open at the gate: no estimated exposure")
+    if closed["cases_with_actuals"]:
+        text = (
+            f"  Closed cases: {closed['cases_with_actuals']} with recorded "
+            f"actuals — {closed['actual_minutes']} min actual"
+        )
+        if closed["actual_usd"] is not None:
+            text += f", ${closed['actual_usd']:,.2f} on rated lines"
+        if closed["unrated_minutes"]:
+            text += (
+                f" ({closed['unrated_minutes']} min on unrated lines, "
+                "minutes only)"
+            )
+        lines.append(text)
+    else:
+        lines.append("  Closed cases: no recorded actuals yet")
     run = handoff["last_board_run"]
     lines += ["", "LAST BOARD RUN:"]
     if run is None:
