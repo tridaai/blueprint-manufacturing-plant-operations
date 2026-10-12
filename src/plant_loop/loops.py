@@ -161,6 +161,11 @@ class CaseRun:
     # the first diagnose round, from the store the service bound;
     # None when the diagnosed fault has no qualifying closed prior.
     recurrence: RecurrenceLink | None = None
+    # Whether the recurrence check has run for this case run. The
+    # check is sought ONCE, against the first diagnosis; a miss is
+    # final for the run (a later round settling on a fault with a
+    # prior does not re-seek — see _note_recurrence).
+    recurrence_checked: bool = False
 
 
 def _gap_keys(gaps: list[Gap]) -> list[str]:
@@ -286,11 +291,12 @@ class CaseLoopController:
         that settles elsewhere in later rounds is measured
         against it (the departure mark), never re-keyed.
         """
-        if run.recurrence is not None or self.recurrence_provider is None:
+        if run.recurrence_checked or self.recurrence_provider is None:
             return
         top = run.diagnosis.top()
         if top is None:
             return
+        run.recurrence_checked = True
         link = self.recurrence_provider(run.case, top.fault_class)
         if link is None:
             return

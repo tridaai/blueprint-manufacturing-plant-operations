@@ -104,6 +104,7 @@ class CaseState(TypedDict, total=False):
     session: dict
     diagnosis: dict
     recurrence: dict
+    recurrence_checked: bool
     plan: dict
     gaps: list[dict]
     rounds: list[dict]
@@ -168,6 +169,7 @@ def _run_from_state(controller: CaseLoopController, state: CaseState) -> CaseRun
         if state.get("recurrence")
         else None
     )
+    run.recurrence_checked = bool(state.get("recurrence_checked"))
     run.plan = ActionPlan.model_validate(state["plan"]) if state.get("plan") else ActionPlan()
     run.gaps = [Gap.model_validate(g) for g in state.get("gaps", [])]
     run.rounds = [RoundRecord.model_validate(r) for r in state.get("rounds", [])]
@@ -196,6 +198,7 @@ def _run_to_state(run: CaseRun) -> dict:
         "kb_chunks": run.ctx.kb_context,
         "history": run.ctx.history,
         "recurrence": run.recurrence.model_dump() if run.recurrence else {},
+        "recurrence_checked": run.recurrence_checked,
     }
 
 
