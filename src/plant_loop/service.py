@@ -26,6 +26,12 @@ never to the graphs directly. The service:
   is checked), records the supervisor's decision on them, and lets
   a PM cycle case's outcome — and nothing else — close or roll its
   obligation's cycle;
+- declares, plans and confirms downtime windows (windows.py):
+  a supervisor declares the window (start, length, scope), the
+  plan packs the work-ready cases and due PM obligations in
+  board priority order in code, and a supervisor confirms it —
+  confirmation re-reading the fingerprinted state the plan was
+  computed over, so a drifted plan refuses rather than stands;
 - records the ends of things (lifecycle.py): a supervisor's
   retirement of a PM obligation, and a machine's decommission —
   which retires that machine's obligations automatically, lists
@@ -51,6 +57,7 @@ from . import carryover as carryover_module
 from . import recurrence as recurrence_module
 from . import economics as economics_module
 from . import gaps as gaps_module
+from . import windows as windows_module
 from . import handoff as handoff_module
 from . import history as history_module
 from . import lifecycle as lifecycle_module
@@ -70,6 +77,7 @@ from .schemas import (
     BoardItem,
     BoardRunResult,
     CaseResult,
+    DowntimeWindow,
     ExceptionCase,
     KnowledgeGapReport,
     MachineRecord,
@@ -125,6 +133,10 @@ class PlantService:
     @property
     def machine_lifecycle(self) -> MachineLifecycle:
         return MachineLifecycle(self.store, self.pm_manager)
+
+    @property
+    def window_planner(self) -> windows_module.WindowPlanner:
+        return windows_module.WindowPlanner(self.store, self.allocation)
 
     def _refuse_if_decommissioned(self, case: ExceptionCase) -> None:
         """The intake guard (lifecycle.py): no new work for a
@@ -708,6 +720,53 @@ class PlantService:
         obligation (pm.py): actor and reason required, one-way,
         the reason on the record forever."""
         return self.pm_manager.retire_obligation(obligation_id, by=by, reason=reason)
+
+    # -- downtime windows (windows.py) ----------------------------------------
+
+    def declare_window(
+        self,
+        *,
+        by: str = "",
+        starts_at: str = "",
+        length_min: int = 0,
+        line_ids: list[str] | None = None,
+        machine_ids: list[str] | None = None,
+    ) -> DowntimeWindow:
+        """Declare a downtime window (windows.py) and compute its
+        first plan: the work-ready cases and due PM obligations in
+        scope, packed in board priority order against the window's
+        minutes. The plan is a proposal until confirmed."""
+        return self.window_planner.declare(
+            by=by,
+            starts_at=starts_at,
+            length_min=length_min,
+            line_ids=line_ids,
+            machine_ids=machine_ids,
+        )
+
+    def plan_window(self, window_id: str) -> DowntimeWindow:
+        """Recompute a proposed window's plan from the records as
+        they stand — the remedy a drift refusal names."""
+        return self.window_planner.plan(window_id)
+
+    def confirm_window(self, window_id: str, by: str = "") -> DowntimeWindow:
+        """Confirm a window's plan (windows.py): a supervisor's
+        act that re-reads the fingerprinted state first — drift
+        refuses, naming what changed. Confirmation moves no case:
+        the window is a schedule overlay, and its packed items
+        are booked against overlapping windows from here."""
+        return self.window_planner.confirm(window_id, by=by)
+
+    def windows(self) -> list[DowntimeWindow]:
+        return self.window_planner.windows()
+
+    def get_window(self, window_id: str) -> DowntimeWindow | None:
+        return self.store.get_window_record(window_id)
+
+    def window_counts(self) -> dict:
+        """The window statistics (windows.py): planned / proposed /
+        confirmed counts — counts only, no utilisation KPI."""
+        return windows_module.window_counts(self.window_planner.windows())
 
     # -- machine lifecycle (lifecycle.py) -------------------------------------
 
