@@ -73,6 +73,18 @@ def main(argv: list[str] | None = None) -> int:
     decide.add_argument("--by", default="")
     decide.add_argument("--reason", default="")
 
+    amend = sub.add_parser(
+        "amend",
+        help="record a supervisor's amendment to a waiting case's plan (amendments.py)",
+    )
+    amend.add_argument("case_id")
+    amend.add_argument("kind", choices=["part_swap", "step_strike"])
+    amend.add_argument("--by", default="", help="the supervisor (required)")
+    amend.add_argument("--reason", default="", help="the supervisor's reason (required)")
+    amend.add_argument("--from-part", default="", help="part_swap: the part the plan draws")
+    amend.add_argument("--to-part", default="", help="part_swap: a KB part id to draw instead")
+    amend.add_argument("--step", default="", help="step_strike: the step id to strike")
+
     sub.add_parser("pm-proposals", help="PM proposals the watch's pattern earned (pm.py)")
 
     sub.add_parser("pm-obligations", help="standing PM obligations (pm.py)")
@@ -160,6 +172,23 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "decide":
             record = service.record_decision(args.case_id, args.decision, by=args.by, reason=args.reason)
             print(f"{record.case_id}: {record.decision} by {record.decision_by or 'supervisor'} → {record.status}")
+        elif args.command == "amend":
+            record = service.amend_case(
+                args.case_id,
+                kind=args.kind,
+                by=args.by,
+                reason=args.reason,
+                from_part_id=args.from_part,
+                to_part_id=args.to_part,
+                step_id=args.step,
+            )
+            amendment = record.amendments[-1]
+            print(
+                f"{record.case_id}: {amendment.amendment_id} [{amendment.kind}] "
+                f"recorded by {amendment.by} — re-verification "
+                f"{amendment.verification.status.upper()}: "
+                f"{amendment.verification.detail}"
+            )
         elif args.command == "pm-proposals":
             proposals = service.pm_proposals()
             if not proposals:

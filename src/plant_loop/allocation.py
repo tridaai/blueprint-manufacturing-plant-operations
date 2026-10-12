@@ -71,6 +71,15 @@ RELEASE_REASON = "released_by_gate_rejection"
 # will draw the part, exactly as before.
 RELEASE_RUN_ENDED = "released_run_ended"
 
+# The amendment release (amendments.py): when a supervisor's gate
+# amendment swaps the part a converged plan draws, and the amended
+# plan passes re-verification, the old part's claim is released
+# with this reason and the new part is claimed in the same act —
+# the ledger follows the plan the supervisor actually approved the
+# shape of, never the superseded one. A *failed* amendment moves
+# no claim at all.
+RELEASE_BY_AMENDMENT = "released_by_amendment"
+
 
 class AllocationLedger:
     """Claims over the store: read the shelf net, claim, release."""
@@ -105,6 +114,26 @@ class AllocationLedger:
         if on_hand is None:
             return None
         return on_hand - self.claimed_qty(part_id)
+
+    def effective_qty_excluding(self, part_id: str, case_id: str) -> int | None:
+        """Shelf qty net of every *other* case's claims.
+
+        The amendment re-verification's shelf view (amendments.py):
+        a gated case's own claims are the plan being re-measured,
+        not contention against it — the case measured the bare
+        shelf in its loop for the same reason (its claims did not
+        exist yet). What another case holds is contention, and
+        counts in full.
+        """
+        on_hand = kb.part_qty(part_id)
+        if on_hand is None:
+            return None
+        held_by_others = sum(
+            c.qty
+            for c in self.outstanding(part_id)
+            if c.case_id != case_id
+        )
+        return on_hand - held_by_others
 
     def note_for(self, part_id: str, needed: int, *, current_run_id: str = "") -> str:
         """Why claims make this part short — or "" when they don't.
@@ -193,6 +222,57 @@ class AllocationLedger:
             existing[claim_id] = claim
             made.append(claim)
         return made
+
+    def claim_part(
+        self,
+        case_id: str,
+        *,
+        drawn: str,
+        original: str,
+        qty: int,
+        run_id: str,
+    ) -> PartClaim:
+        """Claim one drawn part for one case (the amendment path).
+
+        The same one-row-per-case-and-part discipline as
+        :meth:`claim_from_record`: a standing row is returned
+        as-is, a released row (a swap back to a part the case once
+        drew) is revived as a fresh claim of the run named, and a
+        new row carries the requirement it satisfies in
+        ``original_part_id`` when a substitute is drawn.
+        """
+        claim_id = f"claim-{case_id}-{drawn}"
+        prior = next(
+            (c for c in self.store.all_part_claims() if c.claim_id == claim_id),
+            None,
+        )
+        if prior is not None and prior.status == "claimed":
+            return prior
+        stamp = format_timestamp(datetime.now(timezone.utc))
+        if prior is not None:
+            prior.run_id = run_id
+            prior.qty = qty
+            prior.original_part_id = original
+            prior.status = "claimed"
+            prior.claimed_at = stamp
+            prior.released_at = ""
+            prior.released_by = ""
+            prior.release_reason = ""
+            prior.carried_from_run = ""
+            self.store.save_part_claim(prior)
+            return prior
+        claim = PartClaim(
+            claim_id=claim_id,
+            run_id=run_id,
+            case_id=case_id,
+            part_id=drawn,
+            original_part_id=original,
+            qty=qty,
+            status="claimed",
+            claimed_at=stamp,
+        )
+        self.store.save_part_claim(claim)
+        return claim
 
     def release_claim(self, claim: PartClaim, by: str, reason: str) -> PartClaim:
         """Release one standing claim, stamped with when, who, why."""

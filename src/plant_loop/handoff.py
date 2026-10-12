@@ -57,6 +57,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
+from . import amendments as amendments_module
 from . import economics as economics_module
 from . import gaps as gaps_module
 from . import outlook as outlook_module
@@ -316,6 +317,42 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
     # it drafts nothing and unblocks nothing.
     knowledge_gaps = gaps_module.build_gap_report(store, now=moment).model_dump()
 
+    # The gate amendments (amendments.py): every case whose plan a
+    # supervisor amended — waiting or decided — with each amendment
+    # and its re-verification verdict, so a changed plan hands over
+    # as a changed plan, never as if the loop had proposed it. A
+    # case whose latest amendment failed is named as such: its
+    # approval is refused until the failure is resolved, and the
+    # incoming shift should know before it meets the case.
+    amended_cases = []
+    for record in records:
+        if not record.amendments:
+            continue
+        amended_cases.append(
+            {
+                **_brief(record),
+                "status": record.status,
+                "amendment_state": amendments_module.amendment_state(record),
+                "amendments": [
+                    {
+                        "amendment_id": a.amendment_id,
+                        "kind": a.kind,
+                        "by": a.by,
+                        "reason": a.reason,
+                        "change": (
+                            f"swap {a.from_part_id} -> {a.to_part_id}"
+                            if a.kind == amendments_module.PART_SWAP
+                            else f"strike step {a.step_id}"
+                        ),
+                        "verification": a.verification.status,
+                        "verification_detail": a.verification.detail,
+                    }
+                    for a in record.amendments
+                ],
+            }
+        )
+    amended_cases.sort(key=lambda e: (e["case_id"],))
+
     last_run = None
     if runs:
         latest = max(runs, key=lambda run: (run.get("created_at", ""), run.get("run_id", "")))
@@ -354,6 +391,7 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
         "blocked_external": blocked,
         "safety_stops": safety_stops,
         "reliability_items": reliability_items,
+        "amended_cases": amended_cases,
         "confirmed_faults": confirmed_faults,
         "economics": economics,
         "carry_over": carry_over,
@@ -421,6 +459,24 @@ def render_text(handoff: dict) -> str:
             )
     else:
         lines.append("  (none)")
+    lines += ["", "AMENDED AT THE GATE (SUPERVISOR AMENDMENTS TO PLANS):"]
+    if handoff["amended_cases"]:
+        for entry in handoff["amended_cases"]:
+            state = (
+                " — LATEST AMENDMENT FAILED RE-VERIFICATION: approval refused "
+                "until amended again or rejected"
+                if entry["amendment_state"] == "amendment_failed"
+                else ""
+            )
+            lines.append(_case_line(entry) + f" · status {entry['status']}{state}")
+            for amendment in entry["amendments"]:
+                lines.append(
+                    f"      {amendment['amendment_id']} "
+                    f"[{amendment['verification'].upper()}] {amendment['change']} "
+                    f"— by {amendment['by']}: {amendment['reason']}"
+                )
+    else:
+        lines.append("  (none — no plan has been amended at the gate)")
     lines += ["", "FAULTS CONFIRMED BY SUPERVISORS (WRITTEN BACK TO MACHINE HISTORY):"]
     if handoff["confirmed_faults"]:
         for entry in handoff["confirmed_faults"]:

@@ -10,6 +10,11 @@ never to the graphs directly. The service:
   stored record when it is not (API restart, checkpoints off). The
   record is the source of truth either way, and the two paths
   produce the same record;
+- records the supervisor's amendments to a waiting case's plan
+  (amendments.py) — built and re-verified in code at recording,
+  appended to the record passed or failed, with a passing part
+  swap moving the case's claims in the same act — and refuses an
+  approval whose case's latest amendment failed re-verification;
 - runs the board (board graph over the case graph), persisting each
   case record as it reaches the gate, and the board run at the end —
   settling a predecessor run's carry-over first when the run names
@@ -41,6 +46,7 @@ from datetime import datetime, timezone
 from langgraph.types import Command
 from pydantic import ValidationError
 
+from . import amendments as amendments_module
 from . import carryover as carryover_module
 from . import economics as economics_module
 from . import gaps as gaps_module
@@ -50,7 +56,7 @@ from . import lifecycle as lifecycle_module
 from . import outlook as outlook_module
 from . import packet as packet_module
 from . import stats as stats_module
-from .allocation import AllocationLedger
+from .allocation import RELEASE_BY_AMENDMENT, AllocationLedger
 from .events import CollectingSink, RunEvent, format_timestamp
 from .graph import CaseRunOutcome, build_board_graph, build_case_graph
 from .lifecycle import MachineLifecycle
@@ -67,6 +73,7 @@ from .schemas import (
     KnowledgeGapReport,
     MachineRecord,
     PartsOutlook,
+    PlanAmendment,
     PmObligation,
     PmProposal,
     SupervisorOutcome,
@@ -245,6 +252,75 @@ class PlantService:
         self._persist_case(result)
         return CaseRunOutcome(result=result, awaiting_supervisor=awaiting)
 
+    def amend_case(
+        self,
+        case_id: str,
+        *,
+        kind: str,
+        by: str = "",
+        reason: str = "",
+        from_part_id: str = "",
+        to_part_id: str = "",
+        step_id: str = "",
+    ) -> CaseResult:
+        """Record a supervisor's amendment to a waiting case's plan.
+
+        The amendment is built and re-verified in code
+        (amendments.py) — no model is consulted — and appended to
+        the record whether it passes or fails: the attempt and the
+        verdict are both the record. A passing part swap moves the
+        case's claims in the same act (the old part's claim
+        released stamped ``released_by_amendment``, the new part
+        claimed under the case's run), so the ledger always
+        describes the plan currently at the gate; a failed
+        amendment moves nothing. The original plan on the record
+        is never edited.
+        """
+        record = self.store.get_case(case_id)
+        if record is None:
+            raise KeyError(f"unknown case: {case_id}")
+        amendment = amendments_module.build_amendment(
+            record,
+            self.allocation,
+            kind=kind,
+            by=by,
+            reason=reason,
+            from_part_id=from_part_id,
+            to_part_id=to_part_id,
+            step_id=step_id,
+        )
+        record.amendments.append(amendment)
+        self.store.save_case(record)
+        if (
+            amendment.kind == amendments_module.PART_SWAP
+            and amendment.verification.status == amendments_module.VERIFIED
+        ):
+            self._move_claims_for_swap(record, amendment)
+        return record
+
+    def _move_claims_for_swap(self, record: CaseResult, amendment: PlanAmendment) -> None:
+        """The allocation follows a verified swap: release the old
+        drawn part's standing claim (stamped with the amendment),
+        claim the new part under the run that held the old claim."""
+        for claim in self.allocation.claims_for_case(record.case_id):
+            if claim.status == "claimed" and claim.part_id == amendment.from_part_id:
+                run_id = claim.run_id
+                self.allocation.release_claim(
+                    claim, by=amendment.by, reason=RELEASE_BY_AMENDMENT
+                )
+                self.allocation.claim_part(
+                    record.case_id,
+                    drawn=amendment.to_part_id,
+                    original=(
+                        amendment.slot_part_id
+                        if amendment.to_part_id != amendment.slot_part_id
+                        else ""
+                    ),
+                    qty=amendment.qty,
+                    run_id=run_id,
+                )
+                return
+
     def record_decision(
         self, case_id: str, decision: str, by: str = "", reason: str = ""
     ) -> CaseResult:
@@ -254,8 +330,27 @@ class PlantService:
             raise KeyError(f"unknown case: {case_id}")
         if record.status != "awaiting_supervisor":
             raise ValueError(f"case {case_id} is not awaiting a supervisor (status: {record.status})")
+        if decision == "approved":
+            # The approval reads the CURRENT verification state:
+            # a case whose latest amendment failed re-verification
+            # cannot be approved over the failure — the supervisor
+            # amends again, or rejects. Checked here, before either
+            # decision path, so no stale approve can slip past it.
+            failed = amendments_module.latest_failed_amendment(record)
+            if failed is not None:
+                raise ValueError(
+                    f"case {case_id} cannot be approved: its latest amendment "
+                    f"{failed.amendment_id} FAILED re-verification "
+                    f"({failed.verification.detail}) — the supervisor may "
+                    "amend again or reject; a plan whose current verification "
+                    "fails is not approved over the failure"
+                )
         resumed = self._try_resume(case_id, {"decision": decision, "by": by, "reason": reason})
         if resumed is not None:
+            # Amendments are gate records the graph never saw (they
+            # were recorded on the stored record while the thread
+            # waited); the resumed record must not lose them.
+            resumed.amendments = record.amendments
             self.store.save_case(resumed)
             record = resumed
         else:

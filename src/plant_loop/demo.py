@@ -186,6 +186,59 @@ def print_spotlight(service: PlantService) -> None:
         print(f"  {line}")
 
 
+def print_amendment(service: PlantService) -> None:
+    """The gate's third path, on the spotlight case: a supervisor
+    amendment, re-verified in code — and one the gate refuses.
+
+    The strike lands only because the verify stage's code checks
+    pass over the amended plan with every mandatory safety step
+    intact; the attempt to strike the lockout step itself is
+    refused by name before anything is recorded. Neither touches
+    the loop's original plan on the record."""
+    record = service.get_record(SPOTLIGHT)
+    if record is None or record.status != "awaiting_supervisor":
+        return
+    if record.exit_reason != "converged":
+        return
+    print()
+    print("[AMENDMENT] the supervisor edits the plan at the gate; the machine re-checks:")
+    try:
+        service.amend_case(
+            SPOTLIGHT,
+            kind="step_strike",
+            by="demo supervisor",
+            reason="the spindle run-in is covered by the line's standard "
+                   "restart checklist for this bearing change",
+            step_id="run-in",
+        )
+    except ValueError as exc:
+        print(f"  amendment refused: {exc}")
+        return
+    try:
+        service.amend_case(
+            SPOTLIGHT,
+            kind="step_strike",
+            by="demo supervisor",
+            reason="skip the lockout to save time",
+            step_id="safety-loto-cnc3",
+        )
+        print("  ERROR: a mandatory safety step was struck — this must never print")
+    except ValueError as exc:
+        print(f"  refused, as designed: {exc}")
+    record = service.get_record(SPOTLIGHT)
+    for amendment in record.amendments:
+        print(
+            f"  {amendment.amendment_id} [{amendment.kind}] by {amendment.by} — "
+            f"re-verification {amendment.verification.status.upper()}: "
+            f"{amendment.verification.detail}"
+        )
+    print(
+        "  (the original plan on the record is untouched; the amended plan "
+        "is derived from it, and approval now reads the amended plan's "
+        "verification)"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="plant-loop-demo", description=__doc__)
     parser.add_argument("--decision", choices=["approved", "rejected"], default="",
@@ -203,6 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     print_outlook(service)
     print_gaps(service)
     print_spotlight(service)
+    print_amendment(service)
     if args.decision:
         record = service.record_decision(SPOTLIGHT, args.decision, by="demo supervisor")
         print()

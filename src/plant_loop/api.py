@@ -91,6 +91,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import __version__, kb
+from . import amendments as amendments_module
 from . import outlook as outlook_module
 from .config import env_str, load_dotenv
 from .errors import ProviderError
@@ -285,6 +286,15 @@ class DecisionRequest(BaseModel):
     reason: str = ""
 
 
+class AmendmentRequest(BaseModel):
+    kind: str  # part_swap | step_strike
+    by: str = ""  # the supervisor (required — amendments.py refuses anonymous ones)
+    reason: str = ""  # the supervisor's reason (required)
+    from_part_id: str = ""  # part_swap: the part the plan currently draws
+    to_part_id: str = ""  # part_swap: a part on the register, by id
+    step_id: str = ""  # step_strike: a non-mandatory step in the plan
+
+
 class PmDecisionRequest(BaseModel):
     decision: str  # approved | rejected
     by: str = ""
@@ -351,6 +361,44 @@ def get_case(case_id: str):
     record = get_service().get_record(case_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"unknown case: {case_id}")
+    body = record.model_dump()
+    # The plan as it stands at the gate (amendments.py): the
+    # original plan above, with the passing amendments applied and
+    # marked — plus the case's amendment face, so a reader never
+    # has to guess which plan a decision would approve.
+    body["effective_plan"] = (
+        amendments_module.apply_passing_amendments(record).model_dump()
+    )
+    body["amendment_state"] = amendments_module.amendment_state(record)
+    return body
+
+
+@app.post("/cases/{case_id}/amendment")
+def amend_case(case_id: str, body: AmendmentRequest, request: Request):
+    """Record a supervisor's amendment to a waiting case's plan.
+
+    The amendment is re-verified in code at recording
+    (amendments.py) — passed or failed, the attempt and its
+    verdict land on the record the response returns. Recording
+    refusals (not at the gate, anonymous, reasonless, a
+    free-text part, a mandatory safety step) are 409s naming
+    the refusal; an unknown case is a 404.
+    """
+    service = get_service()
+    try:
+        record = service.amend_case(
+            case_id,
+            kind=body.kind,
+            by=body.by,
+            reason=body.reason,
+            from_part_id=body.from_part_id,
+            to_part_id=body.to_part_id,
+            step_id=body.step_id,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"unknown case: {case_id}") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     return record.model_dump()
 
 

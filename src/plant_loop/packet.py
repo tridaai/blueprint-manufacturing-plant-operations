@@ -18,6 +18,14 @@ must not reach the floor dressed as a work order. An approved case
 packets with the approval on its banner; an awaiting one packets
 as what it is — a draft that authorises nothing until the gate.
 
+The plan the packet prints is the plan as it stands at the gate:
+the loop's plan with the supervisor's passing amendments applied
+and marked (amendments.py) — a swapped part prints as the
+supervisor's amendment, with its basis and deltas, and the
+amendment trail rides at the end. A failed latest amendment is
+named on the banner: the last verified plan is what prints, and
+approval is refused while the failure stands.
+
 Composed entirely in code from the stored record, JSON and text
 from the same dict — the handoff idiom (handoff.py). No model
 writes any part of it.
@@ -27,6 +35,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from . import amendments as amendments_module
 from .events import format_timestamp
 from .schemas import EXIT_CONVERGED, GATE_NOTICE, CaseResult, PartClaim
 
@@ -66,6 +75,21 @@ def build_packet(
         if authorised
         else "DRAFT — NOT AUTHORISED UNTIL A SUPERVISOR APPROVES AT THE GATE"
     )
+    # The packet prints the plan as it stands at the gate: the
+    # loop's plan with the supervisor's passing amendments applied
+    # and marked (amendments.py) — a struck step is gone, a swapped
+    # part is the part named, and the amendment records themselves
+    # ride below. A failed latest amendment changes no step here
+    # (the last verified plan is what prints), and says so on the
+    # banner: approval is refused while it stands unresolved.
+    plan = amendments_module.apply_passing_amendments(record)
+    failed = amendments_module.latest_failed_amendment(record)
+    if failed is not None and not authorised:
+        banner += (
+            f" — NOTE: gate amendment {failed.amendment_id} FAILED "
+            "re-verification; approval is refused until the supervisor "
+            "amends again or rejects"
+        )
     top = record.diagnosis.top()
     steps = [
         {
@@ -77,11 +101,11 @@ def build_packet(
             "part_id": step.part_id,
             "qty": step.qty,
         }
-        for index, step in enumerate(record.plan.steps, start=1)
+        for index, step in enumerate(plan.steps, start=1)
     ]
     safety_checklist = [
         {"step_id": step.step_id, "text": step.text}
-        for step in record.plan.steps
+        for step in plan.steps
         if step.kind == "safety" or step.mandatory
     ]
     standing = {
@@ -96,6 +120,16 @@ def build_packet(
             "claimed_on_run": claim.run_id if claim is not None else "",
         }
 
+    # The passing swap that set each slot's drawn part, when one
+    # did — a part the supervisor amended is marked as the
+    # supervisor's, never blended into the verify stage's own
+    # substitution records.
+    swap_by_slot = {
+        a.slot_part_id: a
+        for a in record.amendments
+        if a.kind == amendments_module.PART_SWAP
+        and a.verification.status == amendments_module.VERIFIED
+    }
     parts = [
         {
             "part_id": req.part_id,
@@ -103,9 +137,16 @@ def build_packet(
             "on_hand": req.available_qty,
             "substituted": bool(req.substitute_part_id),
             "substitute_part_id": req.substitute_part_id,
+            "amendment_id": (
+                swap_by_slot[req.part_id].amendment_id
+                if req.part_id in swap_by_slot
+                and (req.substitute_part_id or req.part_id)
+                == swap_by_slot[req.part_id].to_part_id
+                else ""
+            ),
             **_claim_fields(req),
         }
-        for req in record.plan.required_parts
+        for req in plan.required_parts
     ]
     return {
         "case_id": record.case_id,
@@ -142,7 +183,8 @@ def build_packet(
         "substitutions": [
             s.model_dump() for s in record.plan.substitutions if s.status == "applied"
         ],
-        "estimated_downtime_min": record.plan.estimated_downtime_min,
+        "amendments": [a.model_dump() for a in record.amendments],
+        "estimated_downtime_min": plan.estimated_downtime_min,
         "rounds": len(record.rounds),
         "signoff": {
             "supervisor": "",
@@ -204,7 +246,28 @@ def render_text(packet: dict) -> str:
                     if run and run != "single"
                     else " · claimed for this case (single case run)"
                 )
-            if part["substituted"]:
+            if part.get("amendment_id"):
+                amendment = next(
+                    a for a in packet["amendments"]
+                    if a["amendment_id"] == part["amendment_id"]
+                )
+                lines.append(
+                    f"  - {part['part_id']} x{part['qty']} — AMENDED AT THE GATE "
+                    f"({amendment['amendment_id']}, by {amendment['by']}): "
+                    f"{amendment['to_part_id']} is fitted in place of "
+                    f"{amendment['from_part_id']} ({part['on_hand']} of "
+                    f"{amendment['to_part_id']} available when re-verified){claimed}"
+                )
+                lines.append(f"    reason: {amendment['reason']}")
+                if amendment["basis"]:
+                    lines.append(f"    basis: {amendment['basis']}")
+                for delta in amendment["spec_deltas"]:
+                    note = f" ({delta['note']})" if delta["note"] else ""
+                    lines.append(
+                        f"    delta: {delta['attribute']} {delta['original']} "
+                        f"-> {delta['substitute']}{note}"
+                    )
+            elif part["substituted"]:
                 sub = by_part.get(part["part_id"])
                 lines.append(
                     f"  - {part['part_id']} x{part['qty']} — SUBSTITUTION: "
@@ -226,6 +289,25 @@ def render_text(packet: dict) -> str:
                 )
     else:
         lines.append("  (no parts required)")
+    if packet["amendments"]:
+        lines += ["", "AMENDMENTS AT THE GATE — the supervisor's changes, as recorded:"]
+        for amendment in packet["amendments"]:
+            verdict = amendment["verification"]["status"].upper()
+            if amendment["kind"] == "part_swap":
+                change = (
+                    f"swap {amendment['from_part_id']} -> "
+                    f"{amendment['to_part_id']}"
+                )
+            else:
+                change = f"strike step {amendment['step_id']} ({amendment['step_text']})"
+            lines.append(
+                f"  {amendment['amendment_id']} [{verdict}] {change} — "
+                f"by {amendment['by']}: {amendment['reason']}"
+            )
+            if amendment["verification"]["status"] == "failed":
+                lines.append(
+                    f"    {amendment['verification']['detail']}"
+                )
     lines += [
         "",
         f"ESTIMATED DOWNTIME: {packet['estimated_downtime_min']} min "

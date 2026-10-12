@@ -66,6 +66,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from . import amendments as amendments_module
 from . import kb
 from .events import format_timestamp
 from .ports import Store
@@ -182,7 +183,10 @@ def build_outlook(
         if record.status not in OPEN_STATUSES:
             continue
         covered = claimed_by_case.get(record.case_id, {})
-        for req in record.plan.required_parts:
+        # The plan as it stands at the gate (amendments.py): a part
+        # a supervisor swapped projects under the part the plan now
+        # draws, never the superseded one.
+        for req in amendments_module.apply_passing_amendments(record).required_parts:
             drawn = req.substitute_part_id or req.part_id
             uncovered = req.qty - covered.get(drawn, 0)
             if uncovered <= 0:

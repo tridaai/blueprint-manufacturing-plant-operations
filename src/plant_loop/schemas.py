@@ -144,6 +144,8 @@ class Gap(BaseModel):
 
     kind: str  # missing_safety_step | part_unavailable | unevidenced_hypothesis
     #          | banned_action | competing_hypothesis | sop_contradiction
+    #          | incompatible_part (a gate amendment's swapped part fails
+    #            the SOP's constraints for its slot — amendments.py)
     detail: str
     ref: str = ""  # step id / part id / fault class it points at
     blocking: bool = True
@@ -656,6 +658,83 @@ class KnowledgeGapReport(BaseModel):
     gaps: list[KnowledgeGap] = Field(default_factory=list)
 
 
+class AmendmentVerification(BaseModel):
+    """The code re-verification of one gate amendment (amendments.py).
+
+    Run at the moment the amendment is recorded, over the amended
+    plan, with no model anywhere in it: the verify stage's own code
+    checks (``guardrails.verify_plan``) plus, for a part swap, the
+    SOP-constraint test the substitute search applies. ``gaps`` is
+    the failing checks, verbatim; ``detail`` is the one-line
+    verdict the gate faces print. A ``failed`` amendment enters
+    nothing: the plan, the claims and the record's approved-able
+    state all stay with the last verified plan, and approval is
+    refused until a passing amendment (or a rejection) resolves it.
+    """
+
+    status: str = ""  # passed | failed
+    checked_at: str = ""
+    detail: str = ""
+    gaps: list[Gap] = Field(default_factory=list)
+
+
+class PlanAmendment(BaseModel):
+    """One supervisor amendment to a gated case's plan (amendments.py).
+
+    The gate's third path, beside approve and reject: the
+    supervisor who can see the smaller fix — swap this part for
+    the one on the shelf, strike the step that does not apply —
+    records it here, by name, with a reason. The amendment is an
+    overlay: the loop's original plan on the record is never
+    edited, and the amended plan every surface prints is derived
+    from it by replaying the *passing* amendments in order.
+
+    Two kinds, deliberately no more. A ``part_swap`` replaces the
+    part drawn for one requirement slot with another part from
+    the plant register, named by id (free text is refused at
+    recording — a part the register does not carry cannot be
+    verified against anything). A ``step_strike`` removes one
+    non-mandatory step; a mandatory safety step can never be
+    struck (the refusal names the step and its SOP), because an
+    amendment that thins a plan's safety steps is a rejection
+    wearing a smaller hat. There is no step *addition*: an added
+    step has no diagnosis behind it — the supervisor directs the
+    work, the planner proposes it, and new steps come from the
+    loop on a fresh run, not from the gate.
+
+    A swap carries its compatibility paperwork the way a
+    verify-stage substitution does: the KB compatibility basis
+    when the pairing is listed for the slot (with the authored
+    spec deltas), or the plain statement that the pairing is
+    supervisor-specified and unlisted — with the spec deltas
+    computed from the two parts' spec sheets either way.
+    """
+
+    amendment_id: str  # amd-<case_id>-<n>
+    case_id: str = ""
+    kind: str = ""  # part_swap | step_strike
+    by: str = ""  # the supervisor (required)
+    reason: str = ""  # the supervisor's reason (required)
+    recorded_at: str = ""
+    # part_swap: the requirement slot (its own part id), the part
+    # drawn for it before this amendment, and the part drawn after.
+    slot_part_id: str = ""
+    from_part_id: str = ""
+    to_part_id: str = ""
+    qty: int = 0
+    basis: str = ""
+    spec_deltas: list[SpecDelta] = Field(default_factory=list)
+    # The drawn part's shelf position (net of other cases' claims)
+    # as the re-verification measured it — the number the verified
+    # amended plan carries for the swapped requirement.
+    to_available_qty: int = 0
+    # step_strike: the struck step, quoted so the record shows
+    # what was removed even though the amended plan omits it.
+    step_id: str = ""
+    step_text: str = ""
+    verification: AmendmentVerification = Field(default_factory=AmendmentVerification)
+
+
 class TraceStep(BaseModel):
     name: str
     title: str
@@ -695,6 +774,13 @@ class CaseResult(BaseModel):
     decision: str = ""
     decision_by: str = ""
     decision_reason: str = ""
+    # The supervisor's amendments to the plan, recorded at the
+    # gate in order (amendments.py). Append-only: an amendment is
+    # never edited or removed, a failed one included — the record
+    # shows what was tried, what the code checks said, and what
+    # the plan became. The original ``plan`` above is never
+    # touched by any of them.
+    amendments: list[PlanAmendment] = Field(default_factory=list)
     # When a successor board run accepted this case's predecessor
     # run as carry-over and the supervisor dropped the case at that
     # acceptance: {from_run, into_run, by, reason, at}. The case

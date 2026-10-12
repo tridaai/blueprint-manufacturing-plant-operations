@@ -133,6 +133,43 @@ def _economics_section(records: list[CaseResult]) -> dict:
     return {"note": note, "by_line": by_line, **plant}
 
 
+def _amendments_section(records: list[CaseResult]) -> dict:
+    """Gate amendments, counted as their own facts (amendments.py).
+
+    Kept apart from the outcome vocabulary on purpose: an outcome's
+    ``accepted_with_changes`` says what the floor did with a plan;
+    this section says what supervisors changed *at the gate*, how
+    the code re-verification answered, and how many approvals were
+    approvals of an amended plan — so a plan the supervisor fixed
+    is never silently counted as a plan the loop got right.
+    """
+    amended = [r for r in records if r.amendments]
+    all_amendments = [a for r in amended for a in r.amendments]
+    return {
+        "amended_cases": len(amended),
+        "amendments_recorded": len(all_amendments),
+        "part_swaps": sum(1 for a in all_amendments if a.kind == "part_swap"),
+        "step_strikes": sum(1 for a in all_amendments if a.kind == "step_strike"),
+        "verification_passed": sum(
+            1 for a in all_amendments if a.verification.status == "passed"
+        ),
+        "verification_failed": sum(
+            1 for a in all_amendments if a.verification.status == "failed"
+        ),
+        "approved_after_amendment": sum(
+            1
+            for r in amended
+            if r.status == "approved"
+            and any(a.verification.status == "passed" for a in r.amendments)
+        ),
+        "cases_amendment_failed": sum(
+            1
+            for r in amended
+            if r.amendments[-1].verification.status == "failed"
+        ),
+    }
+
+
 def _learning_loop(
     records: list[CaseResult],
     scored: list[CaseResult],
@@ -302,6 +339,7 @@ def diagnosis_stats(
             ),
         },
         "economics": _economics_section(records),
+        "amendments": _amendments_section(records),
         "resolved": {
             "recorded": sum(1 for r in with_outcome if r.outcome.resolved is not None),
             "resolved_true": sum(1 for r in with_outcome if r.outcome.resolved),
