@@ -261,6 +261,10 @@ function renderResult(r) {
       <div>gaps opened: <span class="gap-open">${round.gaps_opened.length ? esc(round.gaps_opened.join(", ")) : "none"}</span> ·
       gaps closed: <span class="gap-closed">${round.gaps_closed.length ? esc(round.gaps_closed.join(", ")) : "none"}</span>${round.substitutions && round.substitutions.length ? `<br>substitute search: ${esc(round.substitutions.join("; "))}` : ""}</div></div>`;
   }
+  if (r.recurrence) {
+    const rec = r.recurrence;
+    html += `<div class="banner ${rec.departed ? "warn" : ""}"><strong>RECURRENCE</strong> — this fault came back: ${esc(rec.fault_class)} was confirmed on ${esc(rec.machine_id)} in case ${esc(rec.prior_case_id)}, ${rec.days_between} day(s) before this case (that case's outcome: ${esc(rec.outcome_decision)}${rec.outcome_resolved === true ? ", resolved" : rec.outcome_resolved === false ? ", not resolved" : ""}).${rec.departed ? `<br><strong>DIAGNOSIS_DEPARTED_FROM_PRIOR</strong> — the settled diagnosis differs from the prior's confirmed fault; the case is judged on its own merits.` : ""}</div>`;
+  }
   if (top) {
     html += `<h3>Diagnosis</h3><dl class="kv"><dt>Top hypothesis</dt><dd><strong>${esc(top.fault_class)}</strong> — confidence ${Number(top.confidence).toFixed(2)} · SOP ${esc(top.sop_id || "—")}</dd></dl>`;
     html += `<ul>` + (r.diagnosis.hypotheses || []).map((h) =>
@@ -541,6 +545,14 @@ async function loadLiveStats() {
       html += `<dl class="kv">
       <dt>Written back to history</dt><dd>${ll.confirmed_written_back} confirmed fault(s)${byMachine ? ` (${byMachine})` : ""}</dd>
       <dt>Repeat-fault top-1</dt><dd>${ll.repeat_cases ? `${pct(ll.repeat_top1_accuracy)} over ${ll.repeat_cases} repeat case(s) · overall top-1 ${pct(ll.overall_top1_accuracy)}` : esc(ll.note || "no repeat-fault cases yet")}</dd>
+    </dl>`;
+    }
+    if (s.recurrence) {
+      const rc = s.recurrence;
+      const byMachine = Object.entries(rc.by_machine || {}).map(([m, n]) => `${esc(m)} ×${n}`).join(" · ");
+      html += `<dl class="kv">
+      <dt>Recurrence links</dt><dd>${rc.linked_cases ? `${rc.linked_cases} case(s) linked to a confirmed prior${byMachine ? ` (${byMachine})` : ""} · window ${rc.window_days} day(s)` : esc(rc.note || "no recurrence links yet")}</dd>
+      ${rc.linked_cases ? `<dt>Agreement with the prior</dt><dd>${pct(rc.agreement_rate)} over ${rc.settled_cases} settled link(s) — ${rc.agreed} agreed · ${rc.departed} departed</dd>` : ""}
     </dl>`;
     }
     if (s.per_fault_class && s.per_fault_class.length) {

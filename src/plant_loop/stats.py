@@ -31,6 +31,13 @@ actually happening — the outcome loop:
   set beside the overall top-1 rate. Both numbers are reported
   plainly, as counts over small samples — the section claims no
   uplift; it shows the two rates and lets the reader judge.
+- **recurrence** — the links the loop made at diagnosis time
+  (recurrence.py): how many cases were linked to a closed prior,
+  by machine, and the *agreement rate* — of the linked cases, how
+  many settled on the prior's confirmed fault. This is measured
+  at the gate, on the diagnosis alone, where the learning loop
+  above measures after outcomes: the two sections look at the
+  same plant habit from opposite ends of a case's life.
 
 Everything here is a pure function over case records (the learning
 section also reads the store's history entries when the caller
@@ -232,6 +239,49 @@ def _learning_loop(
     }
 
 
+NO_LINKS_NOTE = (
+    "no recurrence links yet — no case so far was diagnosed with a fault "
+    "a supervisor had already confirmed on that machine, on a case "
+    "closed inside the recurrence window"
+)
+
+
+def _recurrence_section(records: list[CaseResult]) -> dict:
+    """Recurrence links, counted as recorded (recurrence.py).
+
+    A pure read over the link overlays: how many cases the loop
+    linked at diagnosis time, by machine, and — over the linked
+    cases that carry a settled diagnosis — how many agreed with
+    the prior's confirmed fault and how many departed from it.
+    The link was judged against the window stamped on it; the
+    section reports the window the links share.
+    """
+    linked = [r for r in records if r.recurrence is not None]
+    by_machine: dict[str, int] = {}
+    for r in linked:
+        by_machine[r.machine_id] = by_machine.get(r.machine_id, 0) + 1
+    settled = [r for r in linked if r.diagnosis.top() is not None]
+    agreed = sum(
+        1
+        for r in settled
+        if r.diagnosis.top().fault_class == r.recurrence.fault_class
+    )
+    return {
+        "linked_cases": len(linked),
+        "by_machine": dict(sorted(by_machine.items())),
+        "window_days": (
+            linked[0].recurrence.window_days if linked else None
+        ),
+        "settled_cases": len(settled),
+        "agreed": agreed,
+        "departed": sum(1 for r in settled if r.recurrence.departed),
+        "agreement_rate": (
+            round(agreed / len(settled), 4) if settled else None
+        ),
+        "note": "" if linked else NO_LINKS_NOTE,
+    }
+
+
 def diagnosis_stats(
     records: list[CaseResult], history_entries: list[HistoryEntry] | None = None
 ) -> dict:
@@ -323,6 +373,7 @@ def diagnosis_stats(
         "top1_correct": top1_correct,
         "top1_accuracy": top1_accuracy,
         "learning_loop": _learning_loop(records, scored, top1_accuracy, history_entries),
+        "recurrence": _recurrence_section(records),
         "top2_correct": top2_correct,
         "top2_accuracy": (
             round(top2_correct / len(scored), 4) if scored else None

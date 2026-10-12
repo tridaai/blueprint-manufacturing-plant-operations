@@ -353,6 +353,25 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
         )
     amended_cases.sort(key=lambda e: (e["case_id"],))
 
+    # Recurrence (recurrence.py): the waiting cases the loop
+    # linked to a closed prior — a machine faulting the same way
+    # again is shift news, and a case whose diagnosis departed
+    # from the prior's confirmed fault is named as departed, so
+    # the incoming supervisor meets the disagreement on the
+    # handoff rather than discovering it in the record.
+    recurrences = [
+        {
+            **_brief(r),
+            "prior_case_id": r.recurrence.prior_case_id,
+            "fault_class": r.recurrence.fault_class,
+            "days_between": r.recurrence.days_between,
+            "outcome_decision": r.recurrence.outcome_decision,
+            "departed": r.recurrence.departed,
+        }
+        for r in waiting
+        if r.recurrence is not None
+    ]
+
     last_run = None
     if runs:
         latest = max(runs, key=lambda run: (run.get("created_at", ""), run.get("run_id", "")))
@@ -392,6 +411,7 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
         "safety_stops": safety_stops,
         "reliability_items": reliability_items,
         "amended_cases": amended_cases,
+        "recurrences": recurrences,
         "confirmed_faults": confirmed_faults,
         "economics": economics,
         "carry_over": carry_over,
@@ -477,6 +497,24 @@ def render_text(handoff: dict) -> str:
                 )
     else:
         lines.append("  (none — no plan has been amended at the gate)")
+    lines += ["", "RECURRING FAULTS AT THE GATE (LINKED TO A CONFIRMED PRIOR):"]
+    if handoff["recurrences"]:
+        for entry in handoff["recurrences"]:
+            line = (
+                f"  - {entry['case_id']} · {entry['machine_id']} · "
+                f"{entry['fault_class']} — confirmed in case "
+                f"{entry['prior_case_id']}, {entry['days_between']} day(s) "
+                f"before this case (that case's outcome: "
+                f"{entry['outcome_decision']})"
+            )
+            if entry["departed"]:
+                line += (
+                    " · DIAGNOSIS_DEPARTED_FROM_PRIOR — the settled "
+                    "diagnosis differs from the prior's confirmed fault"
+                )
+            lines.append(line)
+    else:
+        lines.append("  (none — no waiting case is a linked recurrence)")
     lines += ["", "FAULTS CONFIRMED BY SUPERVISORS (WRITTEN BACK TO MACHINE HISTORY):"]
     if handoff["confirmed_faults"]:
         for entry in handoff["confirmed_faults"]:

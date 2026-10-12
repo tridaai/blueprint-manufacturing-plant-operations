@@ -184,6 +184,12 @@ def build_packet(
             s.model_dump() for s in record.plan.substitutions if s.status == "applied"
         ],
         "amendments": [a.model_dump() for a in record.amendments],
+        # The recurrence link (recurrence.py): the floor should
+        # know this fault came back — and, when the diagnosis
+        # departed from the prior's confirmed fault, that it did.
+        "recurrence": (
+            record.recurrence.model_dump() if record.recurrence else None
+        ),
         "estimated_downtime_min": plan.estimated_downtime_min,
         "rounds": len(record.rounds),
         "signoff": {
@@ -224,6 +230,28 @@ def render_text(packet: dict) -> str:
         lines.append(f"  {diagnosis['statement']}")
         for item in diagnosis["evidence"]:
             lines.append(f"  evidence: {item}")
+    recurrence = packet.get("recurrence")
+    if recurrence:
+        lines += [
+            "",
+            "RECURRENCE — THIS FAULT CAME BACK:",
+            f"  {recurrence['fault_class']} was confirmed on "
+            f"{recurrence['machine_id']} in case {recurrence['prior_case_id']}, "
+            f"{recurrence['days_between']} day(s) before this case was "
+            f"reported; that case's outcome: {recurrence['outcome_decision']}"
+            + (
+                f" — work performed: {recurrence['work_performed']}"
+                if recurrence["work_performed"]
+                else ""
+            ),
+        ]
+        if recurrence["departed"]:
+            lines.append(
+                "  DIAGNOSIS_DEPARTED_FROM_PRIOR — this case's settled "
+                "diagnosis differs from the prior's confirmed fault; the "
+                "plan above is the settled diagnosis's own, verified as "
+                "any plan is."
+            )
     lines += ["", "MANDATORY SAFETY CHECKLIST — check off each step before work starts:"]
     if packet["safety_checklist"]:
         for item in packet["safety_checklist"]:
