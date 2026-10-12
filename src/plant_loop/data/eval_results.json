@@ -1,6 +1,6 @@
 {
- "total": 48,
- "passed": 48,
+ "total": 49,
+ "passed": 49,
  "rate": 1.0,
  "gate": 0.95,
  "gate_passed": true,
@@ -291,6 +291,12 @@
   {
    "id": "W1",
    "kind": "windows",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "W2",
+   "kind": "window_review",
    "passed": true,
    "failures": []
   }
