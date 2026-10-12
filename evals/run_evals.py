@@ -1667,6 +1667,171 @@ def run_windows_entry(entry: dict) -> list[str]:
     return failures
 
 
+def run_window_review_entry(entry: dict) -> list[str]:
+    """One window-review entry (windows.py): a sibling of W1's
+    window, answered for after its span closes. A 330-minute
+    window packs the same three cases (120 + 40 + 20) plus the
+    PRESS-1 hydraulics obligation (150) exactly; confirmation
+    lands before any outcome, as a promise must. After the span:
+    WIN-A's outcome is accepted (performed), WIN-B's is accepted
+    WITH CHANGES — the performed set includes it, pinned here —
+    WIN-C's is rejected with its reason (deferred), and the
+    obligation's cycle case surfaces and closes performed. The
+    review, read at 14:00, asserts every state and the minute
+    arithmetic by hand (planned 330, performed 310, deferred 20);
+    it refuses at noon, mid-span; the ledger carries the window
+    with the same counts; the handoff at 14:00 names nothing
+    unfinished; and every case record stands byte-identical
+    across the review — it writes nothing. Expectations were
+    derived from the SOP downtime figures and the outcome
+    vocabulary on paper, then pinned."""
+    from datetime import datetime, timezone
+
+    from plant_loop.handoff import build_handoff
+    from plant_loop.schemas import (
+        CaseResult,
+        ExceptionCase,
+        PmObligation,
+        SupervisorOutcome,
+    )
+
+    failures: list[str] = []
+
+    def check(label: str, condition: bool) -> None:
+        if not condition:
+            failures.append(f"{entry['id']}: {label}")
+
+    service = fresh_service()
+
+    def run_approved(payload: dict) -> None:
+        result = service.run_case(ExceptionCase.model_validate(payload)).result
+        check(f"{payload['case_id']} converged", result.exit_reason == "converged")
+        service.record_decision(payload["case_id"], "approved", by="Eval Supervisor")
+
+    run_approved({
+        "case_id": "WIN-A", "type": "machine_down",
+        "title": "CNC-3 spindle vibration high, line stopped",
+        "description": "Spindle vibration alarm tripped at 06:10 and the machine was stopped by the operator. Audible rumble from the spindle head at speed.",
+        "machine_id": "CNC-3", "line_id": "line-b",
+        "product": "Gear blank GB-220", "batch": "B-4471",
+        "readings": {"spindle_vibration_mm_s": 8.4, "spindle_temp_c": 86, "tool_runout_mm": 0.008},
+        "notes": "Operator: rumble gets worse above 6000 rpm. No recent tool change.",
+        "reporter": "J. Okafor (operator)", "reported_at": "2026-10-22T06:12:00Z",
+        "downtime_minutes": 0,
+    })
+    run_approved({
+        "case_id": "WIN-B", "type": "quality_nonconformance",
+        "title": "Porosity above limit on bracket welds",
+        "description": "QC inspection found porosity in 6.2 percent of welds on the morning bracket batch; batch held at inspection.",
+        "machine_id": "WELD-4", "line_id": "line-c",
+        "product": "Bracket BR-118", "batch": "B-4470",
+        "readings": {"qc_porosity_pct": 6.2, "gas_flow_l_min": 9.5},
+        "notes": "Cylinder was changed on night shift.",
+        "reporter": "S. Patel (quality)", "reported_at": "2026-10-22T05:40:00Z",
+        "downtime_minutes": 0,
+    })
+    run_approved({
+        "case_id": "WIN-C", "type": "material_shortage",
+        "title": "Packing film out of stock at PACK-6",
+        "description": "Last roll of 450 mm packing film used at 06:30; stores show zero rolls. Packing can continue on the approved grade B film if confirmed.",
+        "machine_id": "PACK-6", "line_id": "line-d",
+        "product": "Retail carton RC-9", "batch": "B-4472",
+        "readings": {"material": "FILM-PKG", "rolls_remaining": 0},
+        "notes": "", "reporter": "T. Nguyen (stores)",
+        "reported_at": "2026-10-22T06:31:00Z", "downtime_minutes": 0,
+    })
+    service.store.save_pm_record(PmObligation(
+        obligation_id="PMO-W1", proposal_id="PMP-EVAL", machine_id="PRESS-1",
+        fault_class="hydraulic_pressure_loss", line_id="line-a",
+        interval_days=30, approved_by="Eval Supervisor",
+        approved_at="2026-10-01T00:00:00Z", clock_basis="approval",
+        next_due_at="2026-10-17T06:00:00Z",
+        created_at="2026-10-01T00:00:00Z"))
+
+    window = service.declare_window(
+        by="Eval Supervisor", starts_at="2026-10-24T08:00:00Z",
+        length_min=330, line_ids=["line-b"],
+        machine_ids=["CNC-3", "WELD-4", "PACK-6", "PRESS-1"])
+    check("the window packs the three cases and the obligation exactly",
+          [i.item_id for i in window.packed]
+          == ["WIN-A", "WIN-B", "WIN-C", "PMO-W1"]
+          and window.minutes_used == 330 and window.minutes_left == 0)
+    window = service.confirm_window(window.window_id, by="Eval Supervisor")
+    check("the window confirmed before any outcome — a promise first",
+          window.status == "confirmed")
+
+    try:
+        service.window_review(
+            window.window_id,
+            now=datetime(2026, 10, 24, 12, 0, tzinfo=timezone.utc))
+        check("the review refused mid-span", False)
+    except ValueError as exc:
+        check("the review refused mid-span, naming when it opens",
+              "cannot be reviewed yet" in str(exc)
+              and "2026-10-24T13:30:00Z" in str(exc))
+
+    def outcome(case_id: str, decision: str, note: str) -> None:
+        service.record_outcome(case_id, SupervisorOutcome(
+            decision=decision, work_performed=note,
+            recorded_by="Eval Supervisor"))
+
+    outcome("WIN-A", "accepted", "Bearing set replaced and run-in.")
+    outcome("WIN-B", "accepted_with_changes",
+            "Weld schedule adjusted at the gate; rework done.")
+    outcome("WIN-C", "rejected",
+            "Film delivery slipped to Monday; hours went to the bearing job.")
+
+    due = service.pm_manager.due_cases(
+        now=datetime(2026, 10, 24, 9, 0, tzinfo=timezone.utc))
+    check("the packed obligation's cycle case surfaced for its due point",
+          len(due) == 1 and due[0].case_id == "PMO-W1-1"
+          and due[0].reported_at == "2026-10-17T06:00:00Z")
+    cycle = CaseResult(
+        case_id=due[0].case_id, type=due[0].type,
+        machine_id=due[0].machine_id, line_id=due[0].line_id,
+        reported_at=due[0].reported_at, title=due[0].title,
+        status="approved")
+    cycle_outcome = SupervisorOutcome(
+        decision="accepted",
+        work_performed="Hydraulics inspection performed; seals sound.",
+        recorded_by="Eval Supervisor", recorded_at="2026-10-24T10:15:00Z")
+    cycle.outcome = cycle_outcome
+    service.store.save_case(cycle)
+    service.pm_manager.close_cycle(cycle, cycle_outcome)
+
+    before = {
+        record.case_id: record.model_dump_json()
+        for record in service.store.all_cases()
+    }
+    read_at = datetime(2026, 10, 24, 14, 0, tzinfo=timezone.utc)
+    review = service.window_review(window.window_id, now=read_at)
+    states = {i["item_id"]: i["state"] for i in review["items"]}
+    check("each packed item's execution state, from the records",
+          states == {"WIN-A": "performed", "WIN-B": "performed",
+                     "WIN-C": "deferred", "PMO-W1": "performed"})
+    check("accepted_with_changes counts performed — pinned by WIN-B",
+          states["WIN-B"] == "performed")
+    check("the counts", review["counts"] == {
+        "packed": 4, "performed": 3, "deferred": 1, "not_worked": 0})
+    check("the minutes are the plan's estimates restated",
+          review["minutes"] == {"planned": 330, "performed": 310,
+                                "deferred": 20, "not_worked": 0}
+          and review["performed_share"] == round(310 / 330, 4))
+
+    ledger = service.window_ledger(now=read_at)
+    check("the ledger carries the window with its own arithmetic",
+          len(ledger) == 1 and ledger[0]["window_id"] == window.window_id
+          and ledger[0]["counts"] == review["counts"]
+          and ledger[0]["performed_share"] == review["performed_share"])
+    handoff = build_handoff(service.store, now=read_at)
+    check("the handoff names nothing unfinished — every item answered",
+          handoff["windows_unfinished"] == [])
+    check("case records byte-identical across the review",
+          {r.case_id: r.model_dump_json() for r in service.store.all_cases()}
+          == before)
+    return failures
+
+
 def main() -> int:
     entries = load_cases()
     results = []
@@ -1698,6 +1863,8 @@ def main() -> int:
             failures = run_recurrence_entry(entry)
         elif entry["kind"] == "windows":
             failures = run_windows_entry(entry)
+        elif entry["kind"] == "window_review":
+            failures = run_window_review_entry(entry)
         elif entry["kind"] == "gate":
             failures = run_gate_entry(entry)
         else:
