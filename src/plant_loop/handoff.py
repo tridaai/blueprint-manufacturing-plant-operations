@@ -36,6 +36,11 @@ current records, for the supervisor handing the plant over:
   case is blocked on it right now, so the incoming supervisor
   (and the KB maintainer behind them) sees the pattern, not just
   the latest escalation;
+- the confirmed downtime windows (windows.py) that are still
+  ahead — the schedules the incoming shift inherits: when each
+  starts, what it packs, and the minutes arithmetic — named
+  read-only, exactly as confirmed (a proposed window is not a
+  schedule and is not handed over as one);
 - the board priced in downtime dollars (economics.py): the
   estimated exposure still open at the gate, the largest single
   open exposure, and the closed cases' recorded actuals — minutes
@@ -61,6 +66,7 @@ from . import amendments as amendments_module
 from . import economics as economics_module
 from . import gaps as gaps_module
 from . import outlook as outlook_module
+from . import windows as windows_module
 from .events import format_timestamp
 from .ports import Store
 from .schemas import (
@@ -317,6 +323,13 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
     # it drafts nothing and unblocks nothing.
     knowledge_gaps = gaps_module.build_gap_report(store, now=moment).model_dump()
 
+    # Downtime windows (windows.py): the confirmed schedules
+    # still ahead of the handoff's moment — read off the window
+    # records exactly as confirmed. A mention, nothing more: the
+    # handoff neither plans nor confirms, and a proposed window
+    # (not yet a schedule) is not handed over as one.
+    windows_ahead = windows_module.upcoming_confirmed(store, now=moment)
+
     # The gate amendments (amendments.py): every case whose plan a
     # supervisor amended — waiting or decided — with each amendment
     # and its re-verification verdict, so a changed plan hands over
@@ -418,6 +431,7 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
         "pm": pm,
         "parts_outlook": parts_outlook,
         "knowledge_gaps": knowledge_gaps,
+        "windows": windows_ahead,
         "last_board_run": last_run,
     }
 
@@ -685,6 +699,24 @@ def render_text(handoff: dict) -> str:
             "  (none — every non-converged case's diagnosed fault has "
             "an SOP on record)"
         )
+    windows = handoff.get("windows") or []
+    lines += ["", "CONFIRMED DOWNTIME WINDOWS AHEAD:"]
+    if windows:
+        for entry in windows:
+            scope = ", ".join(entry["line_ids"] + entry["machine_ids"]) or "—"
+            packed = ", ".join(entry["packed_cases"] + entry["packed_obligations"])
+            lines.append(
+                f"  - {entry['window_id']} · {entry['starts_at']} → "
+                f"{entry['ends_at']} ({entry['length_min']} min) · scope: "
+                f"{scope} · confirmed by {entry['confirmed_by']}"
+            )
+            lines.append(
+                f"      packs: {packed or 'nothing'} · "
+                f"{entry['minutes_used']} min used · "
+                f"{entry['minutes_left']} min left"
+            )
+    else:
+        lines.append("  (none — no confirmed window is coming up)")
     run = handoff["last_board_run"]
     lines += ["", "LAST BOARD RUN:"]
     if run is None:

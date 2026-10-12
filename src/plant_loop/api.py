@@ -59,6 +59,14 @@ every route delegates, none re-implements. Notable behaviour:
   ``POST /api/pm/obligations/{id}/retire`` records a supervisor's
   manual retirement of an obligation (actor + reason required,
   one-way);
+- ``GET /api/windows`` lists the downtime windows (windows.py)
+  with their computed plans and the planned / confirmed counts;
+  ``POST /api/windows`` declares one (supervisor, start, length,
+  scope — the plan is computed in the same act); ``POST
+  /api/windows/{id}/plan`` recomputes a proposed window's plan;
+  ``POST /api/windows/{id}/confirm`` confirms it — re-reading the
+  fingerprinted state first, so a plan the board has drifted
+  from refuses, naming the drift;
 - ``GET /api/machines`` lists the plant's machines with their
   lifecycle state (lifecycle.py); ``POST
   /api/machines/{id}/decommission`` records a machine's end
@@ -93,6 +101,7 @@ from pydantic import BaseModel
 from . import __version__, kb
 from . import amendments as amendments_module
 from . import outlook as outlook_module
+from . import windows as windows_module
 from .config import env_str, load_dotenv
 from .errors import ProviderError
 from .loops import BoardPolicy
@@ -311,6 +320,18 @@ class PmDecisionRequest(BaseModel):
 class PmRetireRequest(BaseModel):
     by: str = ""  # required (pm.py): whose act ends the obligation
     reason: str = ""  # required (pm.py): why the plant stops owing it
+
+
+class WindowDeclareRequest(BaseModel):
+    by: str = ""  # required (windows.py): the supervisor declaring it
+    starts_at: str = ""  # a record timestamp (ISO-8601 accepted)
+    length_min: int = 0  # the window's length in minutes (at least 1)
+    line_ids: list[str] = []  # scope: whole lines, by plant-model id
+    machine_ids: list[str] = []  # scope: named machines, by plant-model id
+
+
+class WindowConfirmRequest(BaseModel):
+    by: str = ""  # required (windows.py): who takes the plan as the schedule
 
 
 class MachineDecommissionRequest(BaseModel):
@@ -771,6 +792,92 @@ def machine_disposition(machine_id: str, req: MachineDispositionRequest):
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return record.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# downtime windows (windows.py)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/windows")
+def windows():
+    """The downtime windows and their plans (windows.py), with
+    the planned / proposed / confirmed counts. Each plan shows
+    its sections — packed, deferred, oversized, unestimated,
+    booked elsewhere — and the minutes arithmetic, as computed."""
+    service = get_service()
+    return {
+        "windows": [w.model_dump() for w in service.windows()],
+        "counts": service.window_counts(),
+    }
+
+
+@app.post("/api/windows")
+def window_declare(req: WindowDeclareRequest):
+    """Declare a downtime window and compute its first plan.
+
+    A supervisor's act: ``by`` is required, the scope must name
+    lines and/or machines from the plant model (an unknown id is
+    refused), and the plan packs the work-ready cases and due PM
+    obligations in board priority order in the same act. The
+    plan is a proposal until confirmed.
+    """
+    try:
+        window = get_service().declare_window(
+            by=req.by,
+            starts_at=req.starts_at,
+            length_min=req.length_min,
+            line_ids=req.line_ids,
+            machine_ids=req.machine_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return window.model_dump()
+
+
+@app.get("/api/windows/{window_id}")
+def window_get(window_id: str, format: str = "json"):
+    """One window and its plan (JSON, or ``?format=text`` for the
+    shift-log rendering)."""
+    window = get_service().get_window(window_id)
+    if window is None:
+        raise HTTPException(status_code=404, detail=f"unknown window: {window_id}")
+    if format == "text":
+        return PlainTextResponse(windows_module.render_text(window))
+    return window.model_dump()
+
+
+@app.post("/api/windows/{window_id}/plan")
+def window_plan(window_id: str):
+    """Recompute a proposed window's plan from the records as
+    they stand — the remedy a confirmation drift refusal names.
+    A confirmed window is never re-planned (409)."""
+    try:
+        window = get_service().plan_window(window_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return window.model_dump()
+
+
+@app.post("/api/windows/{window_id}/confirm")
+def window_confirm(window_id: str, req: WindowConfirmRequest):
+    """Confirm a window's plan (windows.py).
+
+    The state the plan was computed over is re-read first: drift
+    — a member decided, outcomed, dropped, or stripped of its
+    claims since the computation — refuses with the drift named
+    (409). Confirmation itself moves no case; it books the
+    plan's packed items against overlapping windows.
+    """
+    try:
+        window = get_service().confirm_window(window_id, by=req.by)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return window.model_dump()
 
 
 @app.get("/api/fault-classes")

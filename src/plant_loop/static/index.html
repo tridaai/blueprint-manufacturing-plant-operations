@@ -116,6 +116,7 @@
       <div id="machines"></div>
       <div id="outlook"></div>
       <div id="gaps"></div>
+      <div id="windows"></div>
       <h3>Shift handoff</h3>
       <p class="note">The board as it stands, written for the next shift — composed in code from the records, never by a model.</p>
       <div class="row" style="margin:10px 0">
@@ -403,6 +404,7 @@ async function loadBoard() {
     loadMachines();
     loadOutlook();
     loadGaps();
+    loadWindows();
   } catch (err) {
     $("board").innerHTML = `<span class="empty">error: ${esc(err.message)}</span>`;
   }
@@ -640,6 +642,84 @@ async function loadGaps() {
     ).join("");
     $("gaps").innerHTML = html;
   } catch (err) { /* the gaps panel is additive; the board still renders */ }
+}
+
+function windowItemRow(i) {
+  const slot = i.start_offset_min !== null && i.start_offset_min !== undefined ? `+${i.start_offset_min}–${i.end_offset_min} min` : "—";
+  const est = i.estimate_min === null || i.estimate_min === undefined ? "no estimate on record" : `est ${i.estimate_min} min`;
+  return `<tr><td>${esc(i.item_id)}</td><td>${esc(i.kind === "case" ? "case" : "PM obligation")}</td><td>${esc(i.machine_id || "—")}</td><td>${esc(i.title)}</td><td>${i.priority}</td><td>${est}</td><td>${slot}</td><td>${esc(i.note || "")}</td></tr>`;
+}
+
+async function loadWindows() {
+  try {
+    const data = await call("/api/windows");
+    const counts = data.counts || { planned: 0, proposed: 0, confirmed: 0 };
+    let html = `<h3>Downtime windows — Saturday's hours, chosen in code</h3><p class="note">A supervisor declares a window (start, length, the lines and/or machines it covers); the plan packs the work-ready cases — converged, approved, no outcome yet, claims covering the plan — and the PM obligations due inside it, in the board's own priority order, against the window's minutes. Estimates are the plans' and SOPs' own stated downtime, never a measured or invented number; an item with no estimate is listed as unestimated, not given one. The plan is a proposal until a supervisor confirms it — confirmation re-reads the state the plan was computed over, and drift refuses, naming what changed. Windows planned: ${counts.planned} · proposed: ${counts.proposed} · confirmed: ${counts.confirmed}.</p>`;
+    html += `<div class="row" style="margin:10px 0">
+      <input id="win-start" type="text" placeholder="starts at — e.g. 2026-10-17T08:00:00Z" style="width:230px">
+      <input id="win-length" type="number" placeholder="minutes" style="width:90px">
+      <input id="win-lines" type="text" placeholder="lines, comma-separated" style="width:200px">
+      <input id="win-machines" type="text" placeholder="machines, comma-separated" style="width:220px">
+      <button id="win-declare">Declare window</button>
+      <span class="note" id="win-status"></span></div>`;
+    for (const w of data.windows) {
+      const scope = [...(w.line_ids || []), ...(w.machine_ids || [])].join(", ") || "—";
+      html += `<div class="banner ${w.status === "confirmed" ? "" : "warn"}"><strong>${esc(w.window_id)}</strong> — ${esc(w.status.toUpperCase())} · ${esc(w.starts_at)} → ${esc(w.ends_at)} (${w.length_min} min) · scope: ${esc(scope)} · declared by ${esc(w.declared_by)}${w.status === "confirmed" ? ` · confirmed by ${esc(w.confirmed_by)}` : ""}<br><span class="note">Minutes: ${w.minutes_used} used · ${w.minutes_left} left of ${w.length_min}. ${esc(w.plan_basis)}</span>`;
+      const section = (title, items) => items && items.length
+        ? `<br><strong>${title}</strong><table><tr><th>Item</th><th>Kind</th><th>Machine</th><th>Title</th><th>Priority</th><th>Estimate</th><th>Slot</th><th>Note</th></tr>` + items.map(windowItemRow).join("") + `</table>`
+        : "";
+      html += section("Packed — in the order the window works them", w.packed);
+      html += section("Deferred — did not fit the minutes left", w.deferred);
+      html += section("Oversized — longer than the window itself", w.oversized);
+      html += section("Unestimated — no estimate on record", w.unestimated);
+      html += section("Booked elsewhere — confirmed into an overlapping window", w.booked_elsewhere);
+      for (const n of w.notes || []) html += `<br><span class="note">note: ${esc(n)}</span>`;
+      if (w.status === "proposed") {
+        html += `<div class="row" style="margin:8px 0"><button data-win-confirm="${esc(w.window_id)}">Confirm plan</button><button data-win-replan="${esc(w.window_id)}">Re-plan</button><span class="note" id="win-status-${esc(w.window_id)}"></span></div>`;
+      }
+      html += `</div>`;
+    }
+    $("windows").innerHTML = html;
+    $("win-declare").addEventListener("click", windowDeclare);
+    document.querySelectorAll("[data-win-confirm]").forEach((btn) => btn.addEventListener("click", () => windowConfirm(btn.dataset.winConfirm)));
+    document.querySelectorAll("[data-win-replan]").forEach((btn) => btn.addEventListener("click", () => windowReplan(btn.dataset.winReplan)));
+  } catch (err) { /* the windows panel is additive; the board still renders */ }
+}
+
+function windowActor() {
+  const actor = $("actor");
+  return (actor && actor.value.trim()) || "Console supervisor";
+}
+
+async function windowDeclare() {
+  const status = $("win-status");
+  try {
+    const split = (id) => $(id).value.split(",").map((s) => s.trim()).filter(Boolean);
+    await call("/api/windows", { method: "POST", body: JSON.stringify({
+      by: windowActor(),
+      starts_at: $("win-start").value.trim(),
+      length_min: parseInt($("win-length").value, 10) || 0,
+      line_ids: split("win-lines"),
+      machine_ids: split("win-machines"),
+    }) });
+    loadWindows();
+  } catch (err) { if (status) status.textContent = `error: ${err.message}`; }
+}
+
+async function windowConfirm(windowId) {
+  const status = $(`win-status-${windowId}`);
+  try {
+    await call(`/api/windows/${windowId}/confirm`, { method: "POST", body: JSON.stringify({ by: windowActor() }) });
+    loadWindows();
+  } catch (err) { if (status) status.textContent = `error: ${err.message}`; }
+}
+
+async function windowReplan(windowId) {
+  const status = $(`win-status-${windowId}`);
+  try {
+    await call(`/api/windows/${windowId}/plan`, { method: "POST" });
+    loadWindows();
+  } catch (err) { if (status) status.textContent = `error: ${err.message}`; }
 }
 
 async function pmRetire(obligationId) {
