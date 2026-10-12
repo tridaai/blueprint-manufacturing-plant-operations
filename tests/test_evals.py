@@ -18,5 +18,5 @@ def test_golden_eval_pack_passes():
         timeout=600,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "47/47 passed" in proc.stdout
+    assert "48/48 passed" in proc.stdout
     assert "gate: PASS" in proc.stdout

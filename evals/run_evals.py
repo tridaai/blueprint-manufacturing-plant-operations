@@ -1,6 +1,6 @@
 """Golden loop eval: known cases in, loop behaviour checked.
 
-Forty-seven entries — twenty cases with authored expectations
+Forty-eight entries — twenty cases with authored expectations
 (per-case diagnosis class, exit reason, rounds used, draft kind,
 open gaps, verify-stage substitution records), three *defect* cases
 (a deliberately defective planner that drops safety steps, names an
@@ -93,7 +93,18 @@ both retirements with their reasons), and one
   a case five weeks out links to nothing; a prior closed as a
   misdiagnosis seeds no link; the stats count the links and the
   agreement, the handoff names the open ones, and the prior
-  record stands byte-identical at the end). Every case
+  record stands byte-identical at the end), and one
+*windows* entry (Saturday's four hours, chosen in code: three
+  work-ready cases pack a 180-minute window exactly in board
+  order; a due PM obligation defers on the same priority footing,
+  a longer one is oversized, one with no SOP behind it is
+  unestimated and never numbered, and one not yet due — like the
+  approved case outside the scope — appears nowhere; an outcome
+  landing on a packed member after computation makes
+  confirmation refuse, naming the drift, the re-plan drops the
+  member and confirms, and an overlapping second window plans
+  around the booked members — while every case record stands
+  byte-identical across planning and confirmation). Every case
 runs the full pipeline through a fresh service on the
 deterministic offline backend, so the gate is hermetic:
 ``uv run python evals/run_evals.py`` exits non-zero below the gate.
@@ -1496,6 +1507,166 @@ def run_recurrence_entry(entry: dict) -> list[str]:
     return failures
 
 
+def run_windows_entry(entry: dict) -> list[str]:
+    """One downtime-window entry (windows.py): the staged board —
+    three work-ready cases in scope packing a 180-minute window
+    exactly (120 + 40 + 20, in board priority order), a fourth
+    approved out of scope, and four PM obligations: one deferred
+    by the minutes, one oversized, one unestimated, one not yet
+    due. Then the confirmation choreography: an outcome recorded
+    on a packed member after computation makes confirmation
+    refuse, naming the drift; re-planning drops the member and
+    confirms; a second, overlapping window then plans around the
+    booked members. Case records are compared byte-for-byte
+    across planning and confirmation — the window is an overlay
+    and moves nothing. Expectations were derived from the SOP
+    downtime figures and the priority formula on paper, then
+    pinned (the obligations are staged as records, as a
+    supervisor-approved obligation stands; their approval path
+    is the PM entries' own subject)."""
+    from datetime import datetime, timezone
+
+    from plant_loop.handoff import build_handoff
+    from plant_loop.schemas import ExceptionCase, PmObligation, SupervisorOutcome
+
+    failures: list[str] = []
+
+    def check(label: str, condition: bool) -> None:
+        if not condition:
+            failures.append(f"{entry['id']}: {label}")
+
+    service = fresh_service()
+
+    def run_approved(payload: dict) -> None:
+        result = service.run_case(ExceptionCase.model_validate(payload)).result
+        check(f"{payload['case_id']} converged", result.exit_reason == "converged")
+        service.record_decision(payload["case_id"], "approved", by="Eval Supervisor")
+
+    run_approved({
+        "case_id": "WIN-A", "type": "machine_down",
+        "title": "CNC-3 spindle vibration high, line stopped",
+        "description": "Spindle vibration alarm tripped at 06:10 and the machine was stopped by the operator. Audible rumble from the spindle head at speed.",
+        "machine_id": "CNC-3", "line_id": "line-b",
+        "product": "Gear blank GB-220", "batch": "B-4471",
+        "readings": {"spindle_vibration_mm_s": 8.4, "spindle_temp_c": 86, "tool_runout_mm": 0.008},
+        "notes": "Operator: rumble gets worse above 6000 rpm. No recent tool change.",
+        "reporter": "J. Okafor (operator)", "reported_at": "2026-10-15T06:12:00Z",
+        "downtime_minutes": 0,
+    })
+    run_approved({
+        "case_id": "WIN-B", "type": "quality_nonconformance",
+        "title": "Porosity above limit on bracket welds",
+        "description": "QC inspection found porosity in 6.2 percent of welds on the morning bracket batch; batch held at inspection.",
+        "machine_id": "WELD-4", "line_id": "line-c",
+        "product": "Bracket BR-118", "batch": "B-4470",
+        "readings": {"qc_porosity_pct": 6.2, "gas_flow_l_min": 9.5},
+        "notes": "Cylinder was changed on night shift.",
+        "reporter": "S. Patel (quality)", "reported_at": "2026-10-15T05:40:00Z",
+        "downtime_minutes": 0,
+    })
+    run_approved({
+        "case_id": "WIN-C", "type": "material_shortage",
+        "title": "Packing film out of stock at PACK-6",
+        "description": "Last roll of 450 mm packing film used at 06:30; stores show zero rolls. Packing can continue on the approved grade B film if confirmed.",
+        "machine_id": "PACK-6", "line_id": "line-d",
+        "product": "Retail carton RC-9", "batch": "B-4472",
+        "readings": {"material": "FILM-PKG", "rolls_remaining": 0},
+        "notes": "", "reporter": "T. Nguyen (stores)",
+        "reported_at": "2026-10-15T06:31:00Z", "downtime_minutes": 0,
+    })
+    run_approved({
+        "case_id": "WIN-E", "type": "machine_down",
+        "title": "CONV-5 belt tracking fault, line stopped",
+        "description": "Belt drifting to one side, edge fraying past the wear mark.",
+        "machine_id": "CONV-5", "line_id": "line-d",
+        "product": "Assembly kit AK-12", "batch": "B-4621",
+        "readings": {"belt_drift_mm": 9}, "notes": "",
+        "reporter": "floor-lead", "reported_at": "2026-10-15T06:00:00Z",
+        "downtime_minutes": 0,
+    })
+
+    def obligation(oid: str, machine: str, fault: str, line: str, due: str) -> None:
+        service.store.save_pm_record(PmObligation(
+            obligation_id=oid, proposal_id="PMP-EVAL", machine_id=machine,
+            fault_class=fault, line_id=line, interval_days=30,
+            approved_by="Eval Supervisor", approved_at="2026-10-01T00:00:00Z",
+            clock_basis="approval", next_due_at=due,
+            created_at="2026-10-01T00:00:00Z"))
+
+    obligation("PMO-W1", "PRESS-1", "hydraulic_pressure_loss", "line-a", "2026-10-17T06:00:00Z")
+    obligation("PMO-W2", "CNC-2", "spindle_cartridge_failure", "line-b", "2026-10-17T09:00:00Z")
+    obligation("PMO-W3", "CNC-3", "bearing_seat_fretting", "line-b", "2026-10-17T09:30:00Z")
+    obligation("PMO-W4", "WELD-4", "wire_feed_fault", "line-c", "2026-11-05T09:00:00Z")
+
+    scope = dict(line_ids=["line-b"], machine_ids=["CNC-3", "WELD-4", "PACK-6", "PRESS-1"])
+    window = service.declare_window(
+        by="Eval Supervisor", starts_at="2026-10-17T08:00:00Z",
+        length_min=180, **scope)
+    check("the plan packs A, B, C in board priority order",
+          [i.item_id for i in window.packed] == ["WIN-A", "WIN-B", "WIN-C"])
+    check("the packing fills the window exactly (120 + 40 + 20 = 180)",
+          [(i.start_offset_min, i.end_offset_min) for i in window.packed]
+          == [(0, 120), (120, 160), (160, 180)]
+          and window.minutes_used == 180 and window.minutes_left == 0)
+    check("the obligation interleaves on the board's own footing and defers",
+          [i.item_id for i in window.deferred] == ["PMO-W1"]
+          and window.deferred[0].priority == 225.0)
+    check("the oversized obligation is listed, never squeezed",
+          [i.item_id for i in window.oversized] == ["PMO-W2"]
+          and window.oversized[0].estimate_min == 240)
+    check("the unestimated obligation is listed, never given a number",
+          [i.item_id for i in window.unestimated] == ["PMO-W3"]
+          and window.unestimated[0].estimate_min is None)
+    section_ids = [i.item_id for s in (window.packed, window.deferred,
+                                       window.oversized, window.unestimated)
+                   for i in s]
+    check("the not-yet-due obligation and the out-of-scope case appear nowhere",
+          "PMO-W4" not in section_ids and "WIN-E" not in section_ids)
+
+    # Drift: an outcome lands on a packed member after computation.
+    service.record_outcome("WIN-B", SupervisorOutcome(
+        decision="accepted", confirmed_fault="weld_quality_drift",
+        work_performed="nozzle changed, welds clean",
+        recorded_by="Eval Supervisor"))
+    refusal = ""
+    try:
+        service.confirm_window(window.window_id, by="Eval Supervisor")
+    except ValueError as exc:
+        refusal = str(exc)
+    check("confirmation refuses on the drift, naming the member",
+          "WIN-B" in refusal and "Re-plan" in refusal)
+
+    snapshots = {c.case_id: c.model_dump_json() for c in service.store.all_cases()}
+    window = service.plan_window(window.window_id)
+    check("the re-plan drops the outcomed member and re-reads the board",
+          [i.item_id for i in window.packed] == ["WIN-A", "WIN-C"]
+          and window.minutes_used == 140 and window.minutes_left == 40
+          and [i.item_id for i in window.deferred] == ["PMO-W1"])
+    window = service.confirm_window(window.window_id, by="Eval Supervisor")
+    check("the fresh plan confirms", window.status == "confirmed")
+
+    second = service.declare_window(
+        by="Eval Supervisor", starts_at="2026-10-17T10:30:00Z",
+        length_min=120, **scope)
+    check("the overlapping window plans around the booked members",
+          [i.item_id for i in second.booked_elsewhere] == ["WIN-A", "WIN-C"]
+          and not second.packed)
+    check("the deferred obligation reads oversized against the shorter window",
+          [i.item_id for i in second.oversized] == ["PMO-W1", "PMO-W2"])
+    check("planning and confirming moved no case record, byte for byte",
+          snapshots == {c.case_id: c.model_dump_json()
+                        for c in service.store.all_cases()})
+
+    handoff = build_handoff(
+        service.store, now=datetime(2026, 10, 17, 7, 0, tzinfo=timezone.utc))
+    check("the handoff names the confirmed window still ahead",
+          [w["window_id"] for w in handoff["windows"]] == [window.window_id]
+          and handoff["windows"][0]["packed_cases"] == ["WIN-A", "WIN-C"])
+    check("the counts are counts", service.window_counts()
+          == {"planned": 2, "proposed": 1, "confirmed": 1})
+    return failures
+
+
 def main() -> int:
     entries = load_cases()
     results = []
@@ -1525,6 +1696,8 @@ def main() -> int:
             failures = run_amendment_entry(entry)
         elif entry["kind"] == "recurrence":
             failures = run_recurrence_entry(entry)
+        elif entry["kind"] == "windows":
+            failures = run_windows_entry(entry)
         elif entry["kind"] == "gate":
             failures = run_gate_entry(entry)
         else:
