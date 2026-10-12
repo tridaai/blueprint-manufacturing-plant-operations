@@ -54,7 +54,7 @@ from typing import Any, Callable, Optional, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from . import drafts, guardrails, screening
+from . import drafts, guardrails, recurrence as recurrence_module, screening
 from .backends import estimate_cost_usd
 from .events import NullSink, RunEvent, format_timestamp
 from .loops import BoardPolicy, CaseLoopController, CaseRun, LoopPolicy
@@ -69,6 +69,7 @@ from .schemas import (
     DraftInfo,
     ExceptionCase,
     Gap,
+    RecurrenceLink,
     RoundRecord,
     TraceStep,
 )
@@ -102,6 +103,7 @@ class CaseState(TypedDict, total=False):
     history: list[dict]
     session: dict
     diagnosis: dict
+    recurrence: dict
     plan: dict
     gaps: list[dict]
     rounds: list[dict]
@@ -161,6 +163,11 @@ def _run_from_state(controller: CaseLoopController, state: CaseState) -> CaseRun
     )
     run = CaseRun(case=case, ctx=ctx)
     run.diagnosis = Diagnosis.model_validate(state["diagnosis"]) if state.get("diagnosis") else Diagnosis()
+    run.recurrence = (
+        RecurrenceLink.model_validate(state["recurrence"])
+        if state.get("recurrence")
+        else None
+    )
     run.plan = ActionPlan.model_validate(state["plan"]) if state.get("plan") else ActionPlan()
     run.gaps = [Gap.model_validate(g) for g in state.get("gaps", [])]
     run.rounds = [RoundRecord.model_validate(r) for r in state.get("rounds", [])]
@@ -188,6 +195,7 @@ def _run_to_state(run: CaseRun) -> dict:
         "session": run.ctx.session,
         "kb_chunks": run.ctx.kb_context,
         "history": run.ctx.history,
+        "recurrence": run.recurrence.model_dump() if run.recurrence else {},
     }
 
 
@@ -291,10 +299,19 @@ def build_case_graph(
         controller.diagnose_round(run)
         update = _run_to_state(run)
         top = run.diagnosis.top()
-        update["_details"] = [
+        details = [
             f"round {run.round_no}: top hypothesis {top.fault_class if top else '—'} "
             f"(confidence {top.confidence:.2f})" if top else "no hypothesis produced"
         ]
+        if run.recurrence is not None:
+            link = run.recurrence
+            details.append(
+                f"recurrence: {link.fault_class} was confirmed on "
+                f"{link.machine_id} in case {link.prior_case_id}, "
+                f"{link.days_between} day(s) before this case — the prior "
+                "episode rides the context from here on (recurrence.py)"
+            )
+        update["_details"] = details
         return update
 
     def plan(state: CaseState) -> dict:
@@ -359,6 +376,11 @@ def build_case_graph(
             priority_reason=reason,
             diagnosis=run.diagnosis,
             plan=run.plan,
+            # The recurrence link, restamped against the final
+            # diagnosis (recurrence.py): a settled fault that is
+            # not the prior's confirmed one marks the record
+            # departed — a fact for the supervisor, never a block.
+            recurrence=recurrence_module.with_departure(run.recurrence, run.diagnosis),
             open_gaps=[] if exit_reason == EXIT_CONVERGED else list(run.gaps),
             rounds=list(run.rounds),
             injection_flags=state.get("injection_flags", []),
@@ -373,15 +395,27 @@ def build_case_graph(
             text = drafts.build_escalation(case, result)
             result.draft = DraftInfo(kind="escalation", text=text)
         result.guardrails = guardrails.run_guardrails(result)
-        return {
-            "result": result.model_dump(),
-            "_details": [
-                f"exit: {exit_reason}; draft: {result.draft.kind}",
-                f"priority: {score} ({reason})",
-                f"guardrails: {'passed' if result.guardrails.passed else 'FAILED — see record'}",
-                "status: awaiting_supervisor — nothing actioned, nothing sent anywhere",
-            ],
-        }
+        details = [
+            f"exit: {exit_reason}; draft: {result.draft.kind}",
+            f"priority: {score} ({reason})",
+            f"guardrails: {'passed' if result.guardrails.passed else 'FAILED — see record'}",
+            "status: awaiting_supervisor — nothing actioned, nothing sent anywhere",
+        ]
+        if result.recurrence is not None:
+            link = result.recurrence
+            details.append(
+                f"recurrence: linked to case {link.prior_case_id} "
+                f"({link.fault_class} confirmed {link.days_between} day(s) "
+                "before this case)"
+                + (
+                    f" — {recurrence_module.DEPARTED_MARK}: the settled "
+                    "diagnosis differs from the prior's confirmed fault"
+                    if link.departed
+                    else " — the settled diagnosis agrees with the prior's "
+                    "confirmed fault"
+                )
+            )
+        return {"result": result.model_dump(), "_details": details}
 
     def supervisor_gate(state: CaseState) -> dict:
         if state.get("gate_mode") == "record":

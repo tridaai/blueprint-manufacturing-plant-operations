@@ -48,7 +48,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from . import guardrails, history, kb, substitution
+from . import guardrails, history, kb, recurrence, substitution
 from .config import env_int
 from .events import NullSink, RunEvent
 from .ports import CaseContext, EventSink, Reasoner, Retriever
@@ -65,6 +65,7 @@ from .schemas import (
     Diagnosis,
     ExceptionCase,
     Gap,
+    RecurrenceLink,
     RoundRecord,
     Substitution,
 )
@@ -137,6 +138,7 @@ class CaseOutcome:
     latency_seconds: float = 0.0
     backend: str = ""
     model: str = ""
+    recurrence: RecurrenceLink | None = None
 
 
 @dataclass
@@ -155,6 +157,10 @@ class CaseRun:
     exit_reason: str = ""
     backend: str = ""
     model: str = ""
+    # The recurrence link (recurrence.py): computed in code after
+    # the first diagnose round, from the store the service bound;
+    # None when the diagnosed fault has no qualifying closed prior.
+    recurrence: RecurrenceLink | None = None
 
 
 def _gap_keys(gaps: list[Gap]) -> list[str]:
@@ -190,6 +196,7 @@ class CaseLoopController:
         history_provider: Callable[[str], list[dict]] | None = None,
         stock_provider: Callable[[str], int | None] | None = None,
         claim_note_provider: Callable[[str, int], str] | None = None,
+        recurrence_provider: Callable[[ExceptionCase, str], RecurrenceLink | None] | None = None,
     ) -> None:
         self.reasoner = reasoner
         self.retriever = retriever
@@ -209,6 +216,11 @@ class CaseLoopController:
         # Names the claiming case when a shortfall is a claim's
         # doing (allocation.py); unbound, shortfalls are unnamed.
         self.claim_note_provider = claim_note_provider
+        # Where a fresh diagnosis checks for the fault's closed
+        # prior (recurrence.py — the service binds it to the record
+        # store). Unbound, no case links: a controller working
+        # without the plant's records cannot claim a recurrence.
+        self.recurrence_provider = recurrence_provider
 
     def _effective_qty(self, part_id: str) -> int | None:
         """Shelf qty as this case may see it: net of claims when a
@@ -258,6 +270,45 @@ class CaseLoopController:
         out = self.reasoner.diagnose(run.ctx, focus=run.gaps)
         run.diagnosis = out.payload
         self._account(run, out)
+        self._note_recurrence(run)
+
+    def _note_recurrence(self, run: CaseRun) -> None:
+        """The recurrence check (recurrence.py), run once per case.
+
+        The moment the loop's first diagnosis lands, its top fault
+        is the join key: code asks the bound store whether the
+        plant has already closed that fault on this machine inside
+        the window. A hit is stamped on the run and enters the
+        context as one labelled chunk, so every later round —
+        diagnose, plan, critique — meets the prior episode with
+        its outcome attached. The check runs once: the link keys
+        on the first diagnosis the loop produced, and a diagnosis
+        that settles elsewhere in later rounds is measured
+        against it (the departure mark), never re-keyed.
+        """
+        if run.recurrence is not None or self.recurrence_provider is None:
+            return
+        top = run.diagnosis.top()
+        if top is None:
+            return
+        link = self.recurrence_provider(run.case, top.fault_class)
+        if link is None:
+            return
+        run.recurrence = link
+        chunk = recurrence.context_chunk(link)
+        if chunk["chunk_id"] not in {c["chunk_id"] for c in run.ctx.kb_context}:
+            run.ctx.kb_context.append(chunk)
+        self.sink.emit(
+            RunEvent(
+                type="recurrence_linked",
+                case_id=run.case.case_id,
+                detail={
+                    "prior_case_id": link.prior_case_id,
+                    "fault_class": link.fault_class,
+                    "days_between": link.days_between,
+                },
+            )
+        )
 
     def plan_round(self, run: CaseRun) -> None:
         self.sink.emit(RunEvent(type="round_started", case_id=run.case.case_id,
@@ -476,6 +527,7 @@ class CaseLoopController:
             latency_seconds=round(time.perf_counter() - started, 3),
             backend=run.backend or getattr(self.reasoner, "name", ""),
             model=run.model or getattr(self.reasoner, "model", ""),
+            recurrence=recurrence.with_departure(run.recurrence, run.diagnosis),
         )
 
 

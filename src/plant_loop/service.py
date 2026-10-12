@@ -48,6 +48,7 @@ from pydantic import ValidationError
 
 from . import amendments as amendments_module
 from . import carryover as carryover_module
+from . import recurrence as recurrence_module
 from . import economics as economics_module
 from . import gaps as gaps_module
 from . import handoff as handoff_module
@@ -207,6 +208,10 @@ class PlantService:
             claim_note_provider=lambda part_id, needed: self.allocation.note_for(
                 part_id, needed, current_run_id=self._active_run_id
             ),
+            # The recurrence check reads the same store: a fresh
+            # diagnosis whose fault a supervisor already closed on
+            # that machine links the two cases (recurrence.py).
+            recurrence_provider=recurrence_module.provider_for(self.store),
         )
 
     def _case_graph(self, sink: EventSink):

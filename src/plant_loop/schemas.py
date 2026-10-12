@@ -658,6 +658,41 @@ class KnowledgeGapReport(BaseModel):
     gaps: list[KnowledgeGap] = Field(default_factory=list)
 
 
+class RecurrenceLink(BaseModel):
+    """This case's link to the closed case it recurs (recurrence.py).
+
+    Stamped by code at the moment the loop's first diagnosis lands:
+    the diagnosed top fault is the join key, and the link names the
+    most recent earlier case on the same machine whose recorded
+    outcome *confirmed that same fault* inside the recurrence
+    window. It is an overlay on the new case's record only — the
+    prior record is never touched by being linked from.
+
+    The link carries the prior episode as the gate should meet it:
+    the case, what the loop diagnosed there, what the floor's
+    outcome decided and whether it resolved, and the spacing
+    between the two episodes. ``departed`` is stamped when the
+    record is assembled, from the *final* diagnosis: True when the
+    loop's settled fault differs from the prior's confirmed one —
+    the mark the surfaces print as DIAGNOSIS_DEPARTED_FROM_PRIOR.
+    It blocks nothing; it is a fact for the supervisor, and the
+    outcome stats are where it is judged.
+    """
+
+    prior_case_id: str = ""
+    machine_id: str = ""
+    fault_class: str = ""  # the prior's confirmed fault (the join key)
+    prior_diagnosis: str = ""  # the prior case's own top diagnosis
+    outcome_decision: str = ""  # accepted | accepted_with_changes | rejected
+    outcome_resolved: bool | None = None  # None = not recorded
+    work_performed: str = ""
+    prior_reported_at: str = ""
+    reported_at: str = ""  # this case's reported moment
+    days_between: int = 0
+    window_days: int = 0
+    departed: bool = False
+
+
 class AmendmentVerification(BaseModel):
     """The code re-verification of one gate amendment (amendments.py).
 
@@ -781,6 +816,14 @@ class CaseResult(BaseModel):
     # the plan became. The original ``plan`` above is never
     # touched by any of them.
     amendments: list[PlanAmendment] = Field(default_factory=list)
+    # The recurrence link (recurrence.py): set when the loop's
+    # first diagnosis matched a fault a supervisor had already
+    # confirmed on this machine, on a closed case inside the
+    # recurrence window. An overlay computed from the store at
+    # diagnosis time; the prior case's record is never modified
+    # by carrying it. None when this fault has no qualifying
+    # prior — the ordinary cold start.
+    recurrence: RecurrenceLink | None = None
     # When a successor board run accepted this case's predecessor
     # run as carry-over and the supervisor dropped the case at that
     # acceptance: {from_run, into_run, by, reason, at}. The case
