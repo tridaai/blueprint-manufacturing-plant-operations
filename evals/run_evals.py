@@ -1,6 +1,6 @@
 """Golden loop eval: known cases in, loop behaviour checked.
 
-Forty-five entries — twenty cases with authored expectations
+Forty-six entries — twenty cases with authored expectations
 (per-case diagnosis class, exit reason, rounds used, draft kind,
 open gaps, verify-stage substitution records), three *defect* cases
 (a deliberately defective planner that drops safety steps, names an
@@ -73,7 +73,17 @@ both retirements with their reasons), and one
   an SOP and a case blocked on a part contribute no row, because
   neither block is missing knowledge; the report must carry
   exactly the one hand-derived row, and the store stands
-  byte-identical across the build). Every case
+  byte-identical across the build), and one
+*amendment* entry (the supervisor edits, the machine re-checks:
+  a converged case's part swap and step strike are re-verified in
+  code and approved, its claim moving with the swap; the seeded
+  incompatible fan swap fails with its spec delta on the record
+  and approval is refused over the failure; a swap onto a part
+  another case claims fails naming the holder and passes once
+  the holder is rejected; recording refusals — a mandatory
+  safety strike, a free-text part, an amendment on a decided
+  case — write nothing, and the loop's original plan is
+  byte-identical at the end). Every case
 runs the full pipeline through a fresh service on the
 deterministic offline backend, so the gate is hermetic:
 ``uv run python evals/run_evals.py`` exits non-zero below the gate.
@@ -1067,6 +1077,156 @@ def run_gaps_entry(entry: dict) -> list[str]:
     return failures
 
 
+def run_amendment_entry(entry: dict) -> list[str]:
+    """Gate amendments, proven end to end on four gated cases.
+
+    The choreography (the entry's cases run as single runs on one
+    service): a converged weld case is amended twice — a part swap
+    onto a stocked shelf part, then a step strike — both
+    re-verified in code, its claim moving with the swap, its
+    packet printing the amended plan with the swap marked, and
+    approval following. The blocked fan case takes the seeded
+    incompatible swap (the generic fan, 380 against the SOP's 420
+    floor): AMENDMENT_FAILED with the delta on the record,
+    approval refused over the failure, rejection still open. A
+    seal case's swap onto the printer head another case claims
+    fails naming the holder, and passes once that case is
+    rejected at its own gate. Recording refusals (a mandatory
+    safety strike, a free-text part, an amendment on a decided
+    case) write nothing. The original plan of the amended case is
+    byte-identical at the end.
+    """
+    service = fresh_service()
+    expected = entry["expected"]
+    failures: list[str] = []
+
+    def check(label, condition):
+        if not condition:
+            failures.append(label)
+
+    cases = {
+        cid: ExceptionCase.model_validate(raw)
+        for cid, raw in entry["cases"].items()
+    }
+    for case_id, case in cases.items():
+        result = service.run_case(case).result
+        if result.exit_reason != expected["exits"][case_id]:
+            failures.append(
+                f"exit[{case_id}]: expected {expected['exits'][case_id]}, "
+                f"got {result.exit_reason}"
+            )
+
+    def amend(case_id, **kwargs):
+        return service.amend_case(case_id, by="Golden Supervisor", **kwargs)
+
+    original_plan = service.get_record("AM1").plan.model_dump_json()
+
+    # A mandatory safety step cannot be struck — refused, nothing written.
+    try:
+        amend("AM1", kind="step_strike", reason="skip the isolation",
+              step_id="safety-isolate-weld4")
+        failures.append("mandatory strike: expected a refusal, got a record")
+    except ValueError as exc:
+        check("mandatory strike refusal names the step", "mandatory safety step" in str(exc))
+    check("mandatory strike wrote nothing", service.get_record("AM1").amendments == [])
+
+    # The claim conflict: AM4 wants the printer head AM3 claims.
+    record = amend("AM4", kind="part_swap", reason="the seal bar is on back order",
+                   from_part_id="SEAL-BAR", to_part_id="PRT-HEAD")
+    amendment = record.amendments[-1]
+    check("conflict swap failed", amendment.verification.status == "failed")
+    check("conflict names the holder", "AM3" in amendment.verification.detail)
+
+    # The incompatible swap on the blocked fan case.
+    record = amend("AM2", kind="part_swap", reason="try the generic fan",
+                   from_part_id="FAN-C7", to_part_id="FAN-C7-G")
+    amendment = record.amendments[-1]
+    check("fan swap failed", amendment.verification.status == "failed")
+    check(
+        "fan swap gap is the constraint",
+        any(g.kind == "incompatible_part" for g in amendment.verification.gaps),
+    )
+    deltas = {d.attribute: d for d in amendment.spec_deltas}
+    check(
+        "fan swap delta is 450 -> 380",
+        deltas.get("airflow_m3h") is not None
+        and deltas["airflow_m3h"].original == 450
+        and deltas["airflow_m3h"].substitute == 380,
+    )
+    try:
+        service.record_decision("AM2", "approved", by="Golden Supervisor")
+        failures.append("approve over a failed amendment: expected a refusal")
+    except ValueError:
+        pass
+    record = service.record_decision(
+        "AM2", "rejected", by="Golden Supervisor", reason="no compliant fan"
+    )
+    check("fan case rejected after failure", record.status == "rejected")
+
+    # The passing swap + strike on the converged weld case.
+    record = amend("AM1", kind="part_swap",
+                   reason="tips inspected — the liner is the worn consumable",
+                   from_part_id="TIP-08", to_part_id="LINER-045")
+    check("weld swap passed", record.amendments[-1].verification.status == "passed")
+    claims = {c.part_id: c for c in service.allocation.claims_for_case("AM1")}
+    check(
+        "old claim released by the amendment",
+        claims["TIP-08"].status == "released"
+        and claims["TIP-08"].release_reason == "released_by_amendment",
+    )
+    check("new part claimed", claims["LINER-045"].status == "claimed")
+    record = amend("AM1", kind="step_strike",
+                   reason="gas flow was verified at the last PM",
+                   step_id="gas-check")
+    check("strike passed", record.amendments[-1].verification.status == "passed")
+    packet_text = service.case_packet("AM1")["text"]
+    check("packet marks the swap", "AMENDED AT THE GATE" in packet_text)
+    check(
+        "packet names the drawn part",
+        "LINER-045 is fitted in place of TIP-08" in packet_text,
+    )
+    record = service.record_decision("AM1", "approved", by="Golden Supervisor")
+    check("amended case approved", record.status == "approved")
+    check("amendments survive approval", len(record.amendments) == 2)
+
+    # A decided case takes no amendment; a free-text part neither.
+    try:
+        amend("AM1", kind="step_strike", reason="too late", step_id="test-welds")
+        failures.append("amendment on a decided case: expected a refusal")
+    except ValueError:
+        pass
+    try:
+        amend("AM4", kind="part_swap", reason="a part from the van",
+              from_part_id="SEAL-BAR", to_part_id="UNOBTAINIUM-9")
+        failures.append("free-text part: expected a refusal")
+    except ValueError:
+        pass
+
+    # The holder's rejection frees the head; AM4's swap now passes.
+    service.record_decision("AM3", "rejected", by="Golden Supervisor",
+                            reason="the printer is being replaced whole")
+    record = amend("AM4", kind="part_swap", reason="the seal bar is on back order",
+                   from_part_id="SEAL-BAR", to_part_id="PRT-HEAD")
+    check("conflict swap passes once freed",
+          record.amendments[-1].verification.status == "passed")
+
+    # The loop's original plan was never edited, and the stats
+    # count the gate's work as its own facts.
+    check(
+        "original plan byte-identical",
+        service.get_record("AM1").plan.model_dump_json() == original_plan,
+    )
+    stats = service.diagnosis_stats()["amendments"]
+    for key, want in expected["stats"].items():
+        if stats.get(key) != want:
+            failures.append(f"stats[{key}]: expected {want}, got {stats.get(key)}")
+    check(
+        "handoff names the amended cases",
+        "AMENDED AT THE GATE" in service.handoff()["text"],
+    )
+    return failures
+
+
 def run_gate_entry(entry: dict) -> list[str]:
     """The reasoner regression gate, exercised end to end.
 
@@ -1138,6 +1298,8 @@ def main() -> int:
             failures = run_outlook_entry(entry)
         elif entry["kind"] == "gaps":
             failures = run_gaps_entry(entry)
+        elif entry["kind"] == "amendment":
+            failures = run_amendment_entry(entry)
         elif entry["kind"] == "gate":
             failures = run_gate_entry(entry)
         else:
