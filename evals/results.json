@@ -1,6 +1,6 @@
 {
- "total": 46,
- "passed": 46,
+ "total": 47,
+ "passed": 47,
  "rate": 1.0,
  "gate": 0.95,
  "gate_passed": true,
@@ -279,6 +279,12 @@
   {
    "id": "A1",
    "kind": "amendment",
+   "passed": true,
+   "failures": []
+  },
+  {
+   "id": "R1",
+   "kind": "recurrence",
    "passed": true,
    "failures": []
   }

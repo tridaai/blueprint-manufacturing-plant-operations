@@ -1,6 +1,6 @@
 """Golden loop eval: known cases in, loop behaviour checked.
 
-Forty-six entries — twenty cases with authored expectations
+Forty-seven entries — twenty cases with authored expectations
 (per-case diagnosis class, exit reason, rounds used, draft kind,
 open gaps, verify-stage substitution records), three *defect* cases
 (a deliberately defective planner that drops safety steps, names an
@@ -83,7 +83,17 @@ both retirements with their reasons), and one
   the holder is rejected; recording refusals — a mandatory
   safety strike, a free-text part, an amendment on a decided
   case — write nothing, and the loop's original plan is
-  byte-identical at the end). Every case
+  byte-identical at the end), and one
+*recurrence* entry (the fault that came back: a case closes
+  with a confirming outcome and its follow-up, six days later,
+  links to it in code — prior, spacing and outcome on the new
+  record, the prior episode in the reasoner's later rounds as a
+  labelled chunk — and agrees; a departing case links, settles
+  elsewhere, is marked departed and still approves at the gate;
+  a case five weeks out links to nothing; a prior closed as a
+  misdiagnosis seeds no link; the stats count the links and the
+  agreement, the handoff names the open ones, and the prior
+  record stands byte-identical at the end). Every case
 runs the full pipeline through a fresh service on the
 deterministic offline backend, so the gate is hermetic:
 ``uv run python evals/run_evals.py`` exits non-zero below the gate.
@@ -1273,6 +1283,219 @@ def run_gate_entry(entry: dict) -> list[str]:
     return failures
 
 
+class RecurrenceProbeReasoner(OfflineReasoner):
+    """Offline rules, instrumented for the recurrence entry.
+
+    Captures a snapshot of the chunk sources in every diagnose
+    context (so the entry can prove the recurrence chunk reached
+    the reasoner only from the round after the link formed), and
+    — for the entry's departing case, from its second diagnose
+    call — settles on the machine's coolant fault instead: a
+    reasoner disagreeing with the plant's confirmed past, the
+    departure the round exists to mark.
+    """
+
+    DEPARTING_CASE = "REC-B"
+    DEPARTS_TO = "coolant_system_fault"
+
+    def __init__(self) -> None:
+        self.contexts: dict[str, list[list[str]]] = {}
+        self._calls: dict[str, int] = {}
+
+    def diagnose(self, ctx, focus):
+        import dataclasses
+
+        case_id = ctx.case.case_id
+        snapshot = dataclasses.replace(
+            ctx, kb_context=[dict(c) for c in ctx.kb_context]
+        )
+        self.contexts.setdefault(case_id, []).append(
+            [c.get("source", "") for c in snapshot.kb_context]
+        )
+        self._calls[case_id] = self._calls.get(case_id, 0) + 1
+        out = super().diagnose(ctx, focus)
+        if case_id == self.DEPARTING_CASE and self._calls[case_id] >= 2:
+            from plant_loop import kb as kb_module
+            from plant_loop.ports import RoundOutput
+            from plant_loop.schemas import Diagnosis, Hypothesis
+
+            sop = kb_module.sop_for(ctx.case.machine_id, self.DEPARTS_TO) or {}
+            diagnosis = Diagnosis(
+                hypotheses=[
+                    Hypothesis(
+                        fault_class=self.DEPARTS_TO,
+                        statement=(
+                            f"{sop.get('title', self.DEPARTS_TO)} fits the "
+                            "readings on the second look."
+                        ),
+                        confidence=0.7,
+                        evidence=["probe: the second look separates it"],
+                        sop_id=sop.get("sop_id", ""),
+                    )
+                ],
+                summary=f"Top hypothesis: {self.DEPARTS_TO} at 0.70 confidence.",
+            )
+            return RoundOutput(
+                payload=diagnosis,
+                input_tokens=out.input_tokens,
+                output_tokens=out.output_tokens,
+                latency_ms=out.latency_ms,
+                backend=out.backend,
+                model=out.model,
+            )
+        return out
+
+
+def run_recurrence_entry(entry: dict) -> list[str]:
+    """Recurrence, proven end to end on one store (recurrence.py).
+
+    The prior case runs cold and closes with a confirming
+    outcome; the follow-up — same machine, same signature, six
+    days later — must link to it (prior, spacing, outcome and
+    all), meet the prior episode as a labelled chunk in its later
+    rounds, and agree. The departing case links too, settles on
+    another fault, is marked DIAGNOSIS_DEPARTED_FROM_PRIOR, and
+    still approves at the gate on its own merits. A case five
+    weeks out links to nothing. A second prior, closed as a
+    misdiagnosis (an outcome confirming nothing), seeds no link
+    for its follow-up. The stats count the two links and the
+    one-in-two agreement; the handoff names both open links; the
+    prior record stands byte-identical at the end.
+    """
+    from plant_loop.handoff import build_handoff
+    from plant_loop.stats import diagnosis_stats as stats_of
+
+    expected = entry["expected"]
+    failures: list[str] = []
+
+    def check(label, condition):
+        if not condition:
+            failures.append(label)
+
+    reasoner = RecurrenceProbeReasoner()
+    service = fresh_service(reasoner)
+
+    prior = service.run_case(ExceptionCase.model_validate(entry["prior"])).result
+    failures += [
+        f"prior: {f}"
+        for f in check_result({"expected": entry["prior_expected"]}, prior)
+    ]
+    service.record_outcome(
+        entry["prior"]["case_id"],
+        SupervisorOutcome.model_validate(entry["prior_outcome"]),
+    )
+    prior_before = service.store.get_case(entry["prior"]["case_id"]).model_dump_json()
+
+    follow = service.run_case(
+        ExceptionCase.model_validate(entry["followup"])
+    ).result
+    failures += [f"followup: {f}" for f in check_result(entry, follow)]
+    link = follow.recurrence
+    check("followup: expected a recurrence link", link is not None)
+    if link is not None:
+        check(
+            "followup: link names the prior",
+            link.prior_case_id == expected["link_prior"],
+        )
+        check(
+            "followup: spacing",
+            link.days_between == expected["link_days_between"],
+        )
+        check(
+            "followup: the prior's outcome rides the link",
+            link.outcome_decision == expected["link_outcome_decision"]
+            and link.outcome_resolved == expected["link_outcome_resolved"],
+        )
+        check("followup: agreement is a clean face", link.departed is False)
+    seen = reasoner.contexts.get(entry["followup"]["case_id"], [])
+    check(
+        "followup: the recurrence chunk reached the reasoner after round 1",
+        len(seen) > 1
+        and "recurrence" not in seen[0]
+        and all("recurrence" in sources for sources in seen[1:]),
+    )
+
+    departing = service.run_case(
+        ExceptionCase.model_validate(entry["departing"])
+    ).result
+    dlink = departing.recurrence
+    check("departing: expected a recurrence link", dlink is not None)
+    if dlink is not None:
+        check(
+            "departing: link names the prior",
+            dlink.prior_case_id == expected["link_prior"],
+        )
+        check("departing: marked departed", dlink.departed is True)
+    check(
+        "departing: settled diagnosis is the departed fault",
+        departing.diagnosis.top() is not None
+        and departing.diagnosis.top().fault_class == expected["departed_to"],
+    )
+    check(
+        "departing: converged on its own merits",
+        departing.exit_reason == expected["departed_exit"],
+    )
+
+    handoff = build_handoff(service.store)
+    check(
+        "handoff: names both open recurrence cases",
+        sorted(e["case_id"] for e in handoff["recurrences"])
+        == sorted(expected["handoff_open"]),
+    )
+    decided = service.record_decision(
+        entry["departing"]["case_id"], "approved", by="Eval Supervisor"
+    )
+    check(
+        "departing: approval is not blocked by the departure",
+        decided.status == "approved",
+    )
+
+    outside = service.run_case(
+        ExceptionCase.model_validate(entry["outside"])
+    ).result
+    check("outside: no link beyond the window", outside.recurrence is None)
+    check(
+        "outside: diagnosis unaffected",
+        outside.diagnosis.top() is not None
+        and outside.diagnosis.top().fault_class == expected["outside_diagnosis"],
+    )
+
+    cold_prior = service.run_case(
+        ExceptionCase.model_validate(entry["misdiagnosed_prior"])
+    ).result
+    service.record_outcome(
+        entry["misdiagnosed_prior"]["case_id"],
+        SupervisorOutcome.model_validate(entry["misdiagnosed_outcome"]),
+    )
+    cold = service.run_case(
+        ExceptionCase.model_validate(entry["misdiagnosed_followup"])
+    ).result
+    check(
+        "misdiagnosed: the follow-up diagnoses the same fault",
+        cold.diagnosis.top() is not None
+        and cold_prior.diagnosis.top() is not None
+        and cold.diagnosis.top().fault_class
+        == cold_prior.diagnosis.top().fault_class,
+    )
+    check(
+        "misdiagnosed: a close confirming nothing seeds no link",
+        cold.recurrence is None,
+    )
+
+    section = stats_of(service.store.all_cases())["recurrence"]
+    for key, want in expected["stats"].items():
+        got = section.get(key)
+        ok = abs(got - want) < 1e-3 if isinstance(want, float) else got == want
+        if not ok:
+            failures.append(f"stats.recurrence.{key}: expected {want}, got {got}")
+    check(
+        "prior: byte-identical at the end",
+        service.store.get_case(entry["prior"]["case_id"]).model_dump_json()
+        == prior_before,
+    )
+    return failures
+
+
 def main() -> int:
     entries = load_cases()
     results = []
@@ -1300,6 +1523,8 @@ def main() -> int:
             failures = run_gaps_entry(entry)
         elif entry["kind"] == "amendment":
             failures = run_amendment_entry(entry)
+        elif entry["kind"] == "recurrence":
+            failures = run_recurrence_entry(entry)
         elif entry["kind"] == "gate":
             failures = run_gate_entry(entry)
         else:
