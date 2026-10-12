@@ -87,6 +87,21 @@ obligation — its cycle case surfaces when a board runs, as
 always). A case in a confirmed window still ends at its own
 gate; the window is the floor's schedule for the downtime, not a
 second decision about the work.
+
+THE REVIEW. A confirmed window is a promise, and once its span
+has closed the plant can say what the promise came to — the
+review at the foot of this module. It is computed in code from
+the same records, per packed item: PERFORMED (the item's outcome
+says the work happened), DEFERRED (the outcome refused it, or a
+PM cycle rolled), or NOT WORKED (no outcome — the item still
+open, or closed without the work). The review is refused while
+the span is still open: the states only mean something once the
+window has closed, and naming work unworked mid-window would
+libel work in progress. The minutes it restates are the plan's
+own estimates — planned minutes performed, never "time worked":
+an estimate is a planning figure, and the review does not
+relabel it as a measurement after the fact. Like the plan, the
+review writes nothing.
 """
 
 from __future__ import annotations
@@ -674,6 +689,395 @@ def upcoming_confirmed(store: Store, *, now: datetime | None = None) -> list[dic
         )
     rows.sort(key=lambda r: (r["starts_at"], r["window_id"]))
     return rows
+
+
+# -- the review ------------------------------------------------------------------
+
+
+# The outcome vocabulary's performed set (schemas.OUTCOME_DECISIONS):
+# the decisions under which the floor did the work — the same set
+# pm.py closes a cycle on. A "rejected" outcome is the floor
+# declining the work, with the reason in its work-performed note.
+PERFORMED_DECISIONS = ("accepted", "accepted_with_changes")
+
+REVIEW_BASIS = (
+    "Read from the records as they stand at the review's moment: a "
+    "packed case is performed when its recorded outcome is accepted "
+    "(with or without changes), deferred when its outcome was "
+    "rejected, and not worked when no outcome stands — still open, "
+    "or closed without the work (dropped, or closed as moot). A "
+    "packed PM obligation is judged by the cycle case that answered "
+    "the due point the plan packed: its outcome decides the same "
+    "way, and a cycle case dropped at a board acceptance is a "
+    "deferral — the obligation rolled, as it rolls on a rejection. "
+    "The window promised the case, not the plan text: a case "
+    "amended at the gate is read as it stands, amendments and all. "
+    "Minutes are the plan's own estimates restated — planned "
+    "minutes performed, never time worked."
+)
+
+
+def _planned_due(window: DowntimeWindow, obligation_id: str) -> str:
+    """The due point the plan packed for an obligation, read off
+    the window's own fingerprint snapshot — the promise as it was
+    made, not the obligation's clock as it stands now (cycles
+    answered since have advanced it)."""
+    for entry in window.fingerprint_detail:
+        if entry.get("key") == f"pm:{obligation_id}":
+            return entry.get("next_due_at") or ""
+    return ""
+
+
+def _case_review(store: Store, item: WindowPlanItem) -> dict:
+    record = store.get_case(item.item_id)
+    row = {
+        "kind": item.kind,
+        "item_id": item.item_id,
+        "machine_id": item.machine_id,
+        "title": item.title,
+        "estimate_min": item.estimate_min,
+        "state": "not_worked",
+        "still_open": False,
+        "detail": "",
+    }
+    if record is None:
+        row["detail"] = "the case is no longer on the record"
+        return row
+    if record.outcome is not None:
+        outcome = record.outcome
+        said = (
+            f"outcome {outcome.decision} recorded by "
+            f"{outcome.recorded_by or 'a supervisor'}"
+            + (f" at {outcome.recorded_at}" if outcome.recorded_at else "")
+            + (f" — {outcome.work_performed}" if outcome.work_performed else "")
+        )
+        if outcome.decision in PERFORMED_DECISIONS:
+            row["state"] = "performed"
+        elif outcome.decision == "rejected":
+            row["state"] = "deferred"
+        else:  # an outcome outside the vocabulary: name it, judge nothing
+            row["detail"] = f"an outcome stands outside the vocabulary: {said}"
+            return row
+        row["detail"] = said
+        return row
+    if record.status == "closed_moot":
+        stamp = record.closed_as_moot or {}
+        row["detail"] = (
+            "closed as moot — its machine was decommissioned"
+            + (f" (by {stamp['by']}" if stamp.get("by") else "")
+            + (f" at {stamp['at']}" if stamp.get("at") else "")
+            + (")" if stamp.get("by") or stamp.get("at") else "")
+            + "; the work will not be done"
+        )
+        return row
+    if record.status == "dropped":
+        stamp = record.dropped_from_board or {}
+        row["detail"] = (
+            "dropped from the board"
+            + (f" at a shift acceptance (by {stamp['by']}" if stamp.get("by") else "")
+            + (")" if stamp.get("by") else "")
+            + " — the work was never done"
+        )
+        return row
+    row["still_open"] = True
+    row["detail"] = (
+        "still open — decided at the gate, no outcome recorded; "
+        "the work is still ahead of the floor"
+    )
+    return row
+
+
+def _pm_review(store: Store, window: DowntimeWindow, item: WindowPlanItem) -> dict:
+    """A packed obligation, judged by the cycle case that answered
+    the due point the plan packed — the obligation's own record
+    (its cycle list, its deferrals) read through that case."""
+    row = {
+        "kind": item.kind,
+        "item_id": item.item_id,
+        "machine_id": item.machine_id,
+        "title": item.title,
+        "estimate_min": item.estimate_min,
+        "state": "not_worked",
+        "still_open": False,
+        "detail": "",
+    }
+    obligation: PmObligation | None = None
+    for record in store.all_pm_records():
+        if isinstance(record, PmObligation) and record.obligation_id == item.item_id:
+            obligation = record
+            break
+    if obligation is None:
+        row["detail"] = "the obligation is no longer on the record"
+        return row
+    due = _planned_due(window, item.item_id)
+    cycles: list[CaseResult] = []
+    for case_id in obligation.cycle_case_ids:
+        case = store.get_case(case_id)
+        if case is not None:
+            cycles.append(case)
+    answering: CaseResult | None = None
+    for case in cycles:  # cycle ids are append-only, in due order
+        if due and case.reported_at == due:
+            answering = case
+            break
+    if answering is None:  # no exact due-point match: the latest cycle
+        for case in cycles:  # the window's span had opened by its end
+            if case.reported_at and case.reported_at <= window.ends_at:
+                answering = case
+    if answering is None:
+        row["still_open"] = True
+        row["detail"] = (
+            f"no cycle case surfaced for the due point the window "
+            f"packed ({due or 'the recorded due point'}) — the "
+            "inspection never reached a board"
+        )
+        if obligation.status == "retired":
+            row["detail"] += (
+                f"; the obligation has since been retired "
+                f"({obligation.retirement_kind or 'retired'}"
+                + (f" — {obligation.retirement_reason}" if obligation.retirement_reason else "")
+                + ")"
+            )
+        return row
+    deferral = next(
+        (d for d in obligation.deferrals if d.get("case_id") == answering.case_id),
+        None,
+    )
+    if answering.outcome is not None:
+        outcome = answering.outcome
+        said = (
+            f"cycle case {answering.case_id} — outcome {outcome.decision} "
+            f"recorded by {outcome.recorded_by or 'a supervisor'}"
+            + (f" at {outcome.recorded_at}" if outcome.recorded_at else "")
+        )
+        if outcome.decision in PERFORMED_DECISIONS:
+            row["state"] = "performed"
+            row["detail"] = said + "; the obligation's cycle closed performed"
+        elif outcome.decision == "rejected":
+            row["state"] = "deferred"
+            row["detail"] = said + (
+                f"; the obligation rolled its due point to "
+                f"{deferral['rolled_to']}" if deferral and deferral.get("rolled_to") else ""
+            )
+        else:
+            row["detail"] = f"an outcome stands outside the vocabulary: {said}"
+        return row
+    if answering.status == "dropped":
+        # A dropped cycle case is a deferral: pm.py rolls the
+        # obligation exactly as a rejected outcome rolls it.
+        row["state"] = "deferred"
+        row["detail"] = (
+            f"cycle case {answering.case_id} was dropped at a board "
+            "acceptance — the obligation rolled"
+            + (
+                f" its due point to {deferral['rolled_to']}"
+                if deferral and deferral.get("rolled_to")
+                else ""
+            )
+        )
+        return row
+    row["still_open"] = True
+    row["detail"] = (
+        f"cycle case {answering.case_id} surfaced for the due point "
+        "and is still open — no outcome recorded"
+    )
+    return row
+
+
+def build_review(
+    store: Store, window: DowntimeWindow, *, now: datetime | None = None
+) -> dict:
+    """The window review: a confirmed window, answered for.
+
+    Computed fresh from the records at the review's moment — an
+    outcome that lands late still counts when it lands, and the
+    review says the moment it was read at. Two refusals, by name:
+    a proposed window (a proposal is not a promise — there is
+    nothing to answer for) and a window whose span has not ended
+    (the states only mean something once the span closes; naming
+    work unworked while the window is still running would libel
+    work in progress). The review writes nothing.
+    """
+    if window.status != STATUS_CONFIRMED:
+        raise ValueError(
+            f"window {window.window_id} is {window.status} — only a "
+            "confirmed window has a review: a proposed plan is a "
+            "proposal, not a promise the floor made"
+        )
+    moment = now or datetime.now(timezone.utc)
+    end = parse_moment(window.ends_at)
+    if end is not None and moment < end:
+        raise ValueError(
+            f"window {window.window_id} cannot be reviewed yet: its "
+            f"span ends at {window.ends_at}, and the review opens "
+            "when the span closes — naming work unworked while the "
+            "window is still running would libel work in progress"
+        )
+    items = [
+        _case_review(store, item)
+        if item.kind == "case"
+        else _pm_review(store, window, item)
+        for item in window.packed
+    ]
+    counts = {
+        "packed": len(items),
+        "performed": sum(1 for i in items if i["state"] == "performed"),
+        "deferred": sum(1 for i in items if i["state"] == "deferred"),
+        "not_worked": sum(1 for i in items if i["state"] == "not_worked"),
+    }
+    minutes = {
+        "planned": sum(i["estimate_min"] or 0 for i in items),
+        "performed": sum(
+            i["estimate_min"] or 0 for i in items if i["state"] == "performed"
+        ),
+        "deferred": sum(
+            i["estimate_min"] or 0 for i in items if i["state"] == "deferred"
+        ),
+        "not_worked": sum(
+            i["estimate_min"] or 0 for i in items if i["state"] == "not_worked"
+        ),
+    }
+    return {
+        "window_id": window.window_id,
+        "reviewed_at": format_timestamp(moment),
+        "starts_at": window.starts_at,
+        "ends_at": window.ends_at,
+        "basis": REVIEW_BASIS,
+        "items": items,
+        "counts": counts,
+        "minutes": minutes,
+        "performed_share": (
+            round(minutes["performed"] / minutes["planned"], 4)
+            if minutes["planned"]
+            else None
+        ),
+    }
+
+
+def window_ledger(store: Store, *, now: datetime | None = None) -> list[dict]:
+    """The ledger of confirmed windows, in span order: what each
+    promised, and — once its span has closed — what it got done.
+
+    A row per confirmed window, never scored against another:
+    different windows carry different work, and a league table
+    would punish the shift that takes the hard window. The
+    arithmetic on a row is that window's own — its packed count,
+    its review's counts, its planned minutes performed as a share
+    of its planned minutes. A window whose span has not ended has
+    no review yet; its row says when the review opens instead of
+    inventing a partial verdict.
+    """
+    moment = now or datetime.now(timezone.utc)
+    rows = []
+    for window in sorted(
+        store.all_window_records(), key=lambda w: (w.starts_at, w.window_id)
+    ):
+        if window.status != STATUS_CONFIRMED:
+            continue
+        row = {
+            "window_id": window.window_id,
+            "starts_at": window.starts_at,
+            "ends_at": window.ends_at,
+            "length_min": window.length_min,
+            "declared_by": window.declared_by,
+            "confirmed_by": window.confirmed_by,
+            "confirmed_at": window.confirmed_at,
+            "packed": len(window.packed),
+            "review_open": False,
+            "review_note": (
+                f"its span has not ended — the review opens at "
+                f"{window.ends_at}"
+            ),
+            "counts": None,
+            "minutes": None,
+            "performed_share": None,
+        }
+        end = parse_moment(window.ends_at)
+        if end is not None and moment >= end:
+            review = build_review(store, window, now=moment)
+            row["review_open"] = True
+            row["review_note"] = ""
+            row["counts"] = review["counts"]
+            row["minutes"] = review["minutes"]
+            row["performed_share"] = review["performed_share"]
+        rows.append(row)
+    return rows
+
+
+def unfinished_windows(store: Store, *, now: datetime | None = None) -> list[dict]:
+    """Ended confirmed windows whose work is still open, for the
+    shift handoff: unfinished business is shift news.
+
+    A window is named when its review shows a not-worked item
+    whose work could still happen — a case still open, a cycle
+    never surfaced or still open. An item closed as moot is in
+    the review's counts, but it is settled history, not business
+    the incoming shift can pick up, and it does not name its
+    window here. Read-only, in span order.
+    """
+    moment = now or datetime.now(timezone.utc)
+    rows = []
+    for window in sorted(
+        store.all_window_records(), key=lambda w: (w.starts_at, w.window_id)
+    ):
+        if window.status != STATUS_CONFIRMED:
+            continue
+        end = parse_moment(window.ends_at)
+        if end is None or moment < end:
+            continue
+        review = build_review(store, window, now=moment)
+        open_items = [
+            {
+                "item_id": i["item_id"],
+                "kind": i["kind"],
+                "machine_id": i["machine_id"],
+                "detail": i["detail"],
+            }
+            for i in review["items"]
+            if i["state"] == "not_worked" and i["still_open"]
+        ]
+        if not open_items:
+            continue
+        rows.append(
+            {
+                "window_id": window.window_id,
+                "starts_at": window.starts_at,
+                "ends_at": window.ends_at,
+                "unfinished": open_items,
+                "not_worked": review["counts"]["not_worked"],
+            }
+        )
+    return rows
+
+
+def render_review_text(review: dict) -> str:
+    """The window review as plain text — the shift-log form."""
+    counts = review["counts"]
+    minutes = review["minutes"]
+    share = review["performed_share"]
+    lines = [
+        f"WINDOW REVIEW {review['window_id']} — read at {review['reviewed_at']}",
+        f"{review['starts_at']} → {review['ends_at']}",
+        f"Review basis: {review['basis']}",
+        (
+            f"Packed {counts['packed']}: performed {counts['performed']} · "
+            f"deferred {counts['deferred']} · not worked {counts['not_worked']}"
+        ),
+        (
+            f"Planned minutes {minutes['planned']}: performed "
+            f"{minutes['performed']} · deferred {minutes['deferred']} · "
+            f"not worked {minutes['not_worked']}"
+            + (f" · performed share {share}" if share is not None else "")
+        ),
+        "",
+    ]
+    for item in review["items"]:
+        lines.append(
+            f"  {item['state'].upper():<10} {item['item_id']} · "
+            f"{item['machine_id']} · {item['title']} · "
+            f"planned {item['estimate_min']} min — {item['detail']}"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def render_text(window: DowntimeWindow) -> str:

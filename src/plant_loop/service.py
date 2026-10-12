@@ -31,7 +31,11 @@ never to the graphs directly. The service:
   plan packs the work-ready cases and due PM obligations in
   board priority order in code, and a supervisor confirms it —
   confirmation re-reading the fingerprinted state the plan was
-  computed over, so a drifted plan refuses rather than stands;
+  computed over, so a drifted plan refuses rather than stands.
+  Once a confirmed window's span has closed, the window review
+  answers for it: each packed item performed, deferred, or not
+  worked, read off the records, and the ledger of confirmed
+  windows in span order;
 - records the ends of things (lifecycle.py): a supervisor's
   retirement of a PM obligation, and a machine's decommission —
   which retires that machine's obligations automatically, lists
@@ -767,6 +771,26 @@ class PlantService:
         """The window statistics (windows.py): planned / proposed /
         confirmed counts — counts only, no utilisation KPI."""
         return windows_module.window_counts(self.window_planner.windows())
+
+    def window_review(
+        self, window_id: str, now: datetime | None = None
+    ) -> dict:
+        """The window review (windows.py): a confirmed window,
+        answered for once its span has closed — each packed item
+        performed, deferred, or not worked, read off the records
+        as they stand. A proposed window, and a window whose span
+        is still open, refuse by name. The review writes nothing."""
+        window = self.store.get_window_record(window_id)
+        if window is None:
+            raise KeyError(f"unknown window: {window_id}")
+        return windows_module.build_review(self.store, window, now=now)
+
+    def window_ledger(self, now: datetime | None = None) -> list[dict]:
+        """The ledger of confirmed windows (windows.py), in span
+        order: each window's packed count and — once its span has
+        closed — its review's counts and planned-minutes share.
+        Windows are never scored against each other."""
+        return windows_module.window_ledger(self.store, now=now)
 
     # -- machine lifecycle (lifecycle.py) -------------------------------------
 

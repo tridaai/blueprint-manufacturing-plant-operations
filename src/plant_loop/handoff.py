@@ -41,6 +41,12 @@ current records, for the supervisor handing the plant over:
   starts, what it packs, and the minutes arithmetic — named
   read-only, exactly as confirmed (a proposed window is not a
   schedule and is not handed over as one);
+- the confirmed windows already over whose packed work is still
+  open (windows.py's review) — the promise the last window made
+  that the floor has not yet kept: the items no outcome stands
+  on and whose work could still happen, named with the review's
+  own words, so unfinished business hands over as visibly as
+  the coming schedule does;
 - the board priced in downtime dollars (economics.py): the
   estimated exposure still open at the gate, the largest single
   open exposure, and the closed cases' recorded actuals — minutes
@@ -330,6 +336,13 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
     # (not yet a schedule) is not handed over as one.
     windows_ahead = windows_module.upcoming_confirmed(store, now=moment)
 
+    # Windows already over, answered for by the review: the ones
+    # whose packed work is still open — a case with no outcome,
+    # a cycle that never surfaced — are unfinished business, and
+    # unfinished business is shift news. Read-only, like the
+    # windows ahead: the handoff reviews nothing itself.
+    windows_unfinished = windows_module.unfinished_windows(store, now=moment)
+
     # The gate amendments (amendments.py): every case whose plan a
     # supervisor amended — waiting or decided — with each amendment
     # and its re-verification verdict, so a changed plan hands over
@@ -432,6 +445,7 @@ def build_handoff(store: Store, *, now: datetime | None = None) -> dict:
         "parts_outlook": parts_outlook,
         "knowledge_gaps": knowledge_gaps,
         "windows": windows_ahead,
+        "windows_unfinished": windows_unfinished,
         "last_board_run": last_run,
     }
 
@@ -717,6 +731,24 @@ def render_text(handoff: dict) -> str:
             )
     else:
         lines.append("  (none — no confirmed window is coming up)")
+    unfinished = handoff.get("windows_unfinished") or []
+    lines += ["", "DOWNTIME WINDOWS OVER — WORK STILL OPEN:"]
+    if unfinished:
+        for entry in unfinished:
+            lines.append(
+                f"  - {entry['window_id']} · {entry['starts_at']} → "
+                f"{entry['ends_at']} · {len(entry['unfinished'])} packed "
+                "item(s) not worked and still open:"
+            )
+            for item in entry["unfinished"]:
+                lines.append(
+                    f"      {item['item_id']} · {item['machine_id']} — "
+                    f"{item['detail']}"
+                )
+    else:
+        lines.append(
+            "  (none — every ended window's packed work has an outcome)"
+        )
     run = handoff["last_board_run"]
     lines += ["", "LAST BOARD RUN:"]
     if run is None:

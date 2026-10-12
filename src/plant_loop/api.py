@@ -60,13 +60,18 @@ every route delegates, none re-implements. Notable behaviour:
   manual retirement of an obligation (actor + reason required,
   one-way);
 - ``GET /api/windows`` lists the downtime windows (windows.py)
-  with their computed plans and the planned / confirmed counts;
-  ``POST /api/windows`` declares one (supervisor, start, length,
-  scope — the plan is computed in the same act); ``POST
-  /api/windows/{id}/plan`` recomputes a proposed window's plan;
-  ``POST /api/windows/{id}/confirm`` confirms it — re-reading the
-  fingerprinted state first, so a plan the board has drifted
-  from refuses, naming the drift;
+  with their computed plans, the planned / confirmed counts, and
+  the ledger of confirmed windows (each window's review counts
+  once its span has closed); ``POST /api/windows`` declares one
+  (supervisor, start, length, scope — the plan is computed in
+  the same act); ``POST /api/windows/{id}/plan`` recomputes a
+  proposed window's plan; ``POST /api/windows/{id}/confirm``
+  confirms it — re-reading the fingerprinted state first, so a
+  plan the board has drifted from refuses, naming the drift;
+  ``GET /api/windows/{id}/review`` answers for a confirmed
+  window once its span has closed — each packed item performed,
+  deferred, or not worked (a proposed window, and one still
+  running, refuse: 409);
 - ``GET /api/machines`` lists the plant's machines with their
   lifecycle state (lifecycle.py); ``POST
   /api/machines/{id}/decommission`` records a machine's end
@@ -809,6 +814,7 @@ def windows():
     return {
         "windows": [w.model_dump() for w in service.windows()],
         "counts": service.window_counts(),
+        "ledger": service.window_ledger(),
     }
 
 
@@ -845,6 +851,28 @@ def window_get(window_id: str, format: str = "json"):
     if format == "text":
         return PlainTextResponse(windows_module.render_text(window))
     return window.model_dump()
+
+
+@app.get("/api/windows/{window_id}/review")
+def window_review(window_id: str, format: str = "json"):
+    """A confirmed window, answered for (windows.py): each packed
+    item performed, deferred, or not worked, read off the records
+    as they stand, with the plan's minutes restated by state.
+
+    The review opens only when the span has closed: a proposed
+    window has no promise to answer for, and a window still
+    running refuses (409) rather than naming work unworked while
+    it is in progress. ``?format=text`` renders the shift-log
+    form."""
+    try:
+        review = get_service().window_review(window_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if format == "text":
+        return PlainTextResponse(windows_module.render_review_text(review))
+    return review
 
 
 @app.post("/api/windows/{window_id}/plan")

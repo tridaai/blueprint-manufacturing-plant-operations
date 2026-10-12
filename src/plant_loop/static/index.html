@@ -662,6 +662,13 @@ async function loadWindows() {
       <input id="win-machines" type="text" placeholder="machines, comma-separated" style="width:220px">
       <button id="win-declare">Declare window</button>
       <span class="note" id="win-status"></span></div>`;
+    const ledger = data.ledger || [];
+    if (ledger.length) {
+      html += `<br><strong>Ledger — confirmed windows, in span order</strong><span class="note"> Each window is answered for on its own arithmetic once its span has closed; windows are never scored against each other. Minutes are the plan's own estimates restated — planned minutes performed, never time worked.</span><table><tr><th>Window</th><th>Span</th><th>Packed</th><th>Performed</th><th>Deferred</th><th>Not worked</th><th>Planned min performed</th></tr>` +
+        ledger.map((r) => r.review_open
+          ? `<tr><td>${esc(r.window_id)}</td><td>${esc(r.starts_at)} → ${esc(r.ends_at)}</td><td>${r.packed}</td><td>${r.counts.performed}</td><td>${r.counts.deferred}</td><td>${r.counts.not_worked}</td><td>${r.minutes.performed} of ${r.minutes.planned}${r.performed_share !== null ? ` (${r.performed_share})` : ""}</td></tr>`
+          : `<tr><td>${esc(r.window_id)}</td><td>${esc(r.starts_at)} → ${esc(r.ends_at)}</td><td>${r.packed}</td><td colspan="4">${esc(r.review_note)}</td></tr>`).join("") + `</table>`;
+    }
     for (const w of data.windows) {
       const scope = [...(w.line_ids || []), ...(w.machine_ids || [])].join(", ") || "—";
       html += `<div class="banner ${w.status === "confirmed" ? "" : "warn"}"><strong>${esc(w.window_id)}</strong> — ${esc(w.status.toUpperCase())} · ${esc(w.starts_at)} → ${esc(w.ends_at)} (${w.length_min} min) · scope: ${esc(scope)} · declared by ${esc(w.declared_by)}${w.status === "confirmed" ? ` · confirmed by ${esc(w.confirmed_by)}` : ""}<br><span class="note">Minutes: ${w.minutes_used} used · ${w.minutes_left} left of ${w.length_min}. ${esc(w.plan_basis)}</span>`;
@@ -676,6 +683,20 @@ async function loadWindows() {
       for (const n of w.notes || []) html += `<br><span class="note">note: ${esc(n)}</span>`;
       if (w.status === "proposed") {
         html += `<div class="row" style="margin:8px 0"><button data-win-confirm="${esc(w.window_id)}">Confirm plan</button><button data-win-replan="${esc(w.window_id)}">Re-plan</button><span class="note" id="win-status-${esc(w.window_id)}"></span></div>`;
+      }
+      if (w.status === "confirmed") {
+        if (new Date(w.ends_at) > new Date()) {
+          html += `<br><span class="note">Review opens at ${esc(w.ends_at)} — the window is still running, and its work is not named unworked while it is in progress.</span>`;
+        } else {
+          try {
+            const review = await call(`/api/windows/${w.window_id}/review`);
+            html += `<br><strong>Review — read at ${esc(review.reviewed_at)}</strong><table><tr><th>Item</th><th>Kind</th><th>Machine</th><th>State</th><th>Planned</th><th>What the record says</th></tr>` +
+              review.items.map((i) => `<tr><td>${esc(i.item_id)}</td><td>${esc(i.kind === "case" ? "case" : "PM obligation")}</td><td>${esc(i.machine_id || "—")}</td><td>${esc(i.state.replace("_", " "))}</td><td>${i.estimate_min} min</td><td>${esc(i.detail)}</td></tr>`).join("") + `</table>` +
+              `<span class="note">Planned minutes ${review.minutes.planned}: performed ${review.minutes.performed} · deferred ${review.minutes.deferred} · not worked ${review.minutes.not_worked} — the plan's own estimates restated, never time worked.</span>`;
+          } catch (err) {
+            html += `<br><span class="note">Review unavailable: ${esc(err.message)}</span>`;
+          }
+        }
       }
       html += `</div>`;
     }
