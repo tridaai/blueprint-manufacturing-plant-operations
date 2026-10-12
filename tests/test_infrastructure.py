@@ -22,6 +22,7 @@ def test_migrations_are_numbered_and_cover_the_schema():
         "0005_part_claims.sql",
         "0006_pm_records.sql",
         "0007_machine_records.sql",
+        "0008_window_records.sql",
     ]
     sql = files[0].read_text()
     for table in ("case_records", "board_runs", "run_errors"):

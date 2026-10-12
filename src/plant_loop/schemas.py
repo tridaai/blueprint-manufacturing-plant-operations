@@ -405,6 +405,104 @@ class MachineRecord(BaseModel):
     created_at: str = ""
 
 
+class WindowPlanItem(BaseModel):
+    """One entry in a downtime window's computed plan (windows.py).
+
+    The plan's sections are all made of these: what packs (with
+    its slot in the window, as offsets from the window's start),
+    what is deferred (with the minutes it fell short by), what is
+    oversized (its estimate exceeds the window outright), what is
+    unestimated (no estimate on record — listed, never given a
+    number), and what is already booked into another confirmed
+    window overlapping this one. ``estimate_min`` is ``None``
+    exactly for the unestimated section: the absence is the fact,
+    and no field on the item can be mistaken for an invented
+    duration.
+    """
+
+    kind: str = ""  # case | pm_obligation
+    item_id: str = ""  # the case id, or the obligation id
+    machine_id: str = ""
+    line_id: str = ""
+    title: str = ""
+    # The board score the packing read: a case's own stamped
+    # priority, or — for an obligation — the same formula read as
+    # the maintenance_alert its cycle case would be (priority.py).
+    priority: float = 0.0
+    priority_reason: str = ""
+    estimate_min: int | None = None
+    estimate_basis: str = ""  # where the estimate comes from, cited
+    start_offset_min: int | None = None  # packed only: slot in the window
+    end_offset_min: int | None = None
+    note: str = ""  # deferred: the shortfall · oversized: the excess
+    #              · booked_elsewhere: the window that holds it
+
+
+class DowntimeWindow(BaseModel):
+    """A planned downtime window and the plan computed for it.
+
+    A supervisor declares the window — when it starts, how many
+    minutes it runs, and what it covers (named lines and/or named
+    machines, in the plant model's own ids). The plan is then
+    computed in code (windows.py): the work-ready cases and the
+    due PM obligations in scope, packed in the board's own
+    priority order against the window's minutes, with everything
+    that did not pack listed by name and reason. The computed
+    plan is a PROPOSAL: it binds nothing until a supervisor
+    confirms it, and confirmation re-reads the state the plan was
+    computed over — a member that has since been decided,
+    outcomed, dropped, or lost its claims refuses the
+    confirmation, naming the drift, and the remedy is to re-plan.
+
+    The window is a schedule overlay on the board. It is not a
+    board run, it works no case, it moves no case's state, and
+    confirming one changes no case record — the cases in it still
+    end at their own gates, exactly as they would without it.
+
+    Storage follows the PM / machine-record precedent (migration
+    0008): windows are records in their own table, because a
+    window declared on Tuesday is confirmed (or superseded by
+    events) on Thursday, and later requests — a second window's
+    double-booking check, the handoff — must find it where it
+    lives, not inside some case's payload.
+    """
+
+    window_id: str  # WIN-<random hex>
+    status: str = "proposed"  # proposed | confirmed (one-way)
+    declared_by: str = ""  # the supervisor who declared it (required)
+    declared_at: str = ""
+    starts_at: str = ""  # record timestamp
+    ends_at: str = ""  # starts_at + length_min, computed at declaration
+    length_min: int = 0
+    line_ids: list[str] = Field(default_factory=list)
+    machine_ids: list[str] = Field(default_factory=list)
+    # The packing rules, printed on the plan itself — the same
+    # text every time, so a reader never has to trust a summary
+    # of how the plan was made.
+    plan_basis: str = ""
+    notes: list[str] = Field(default_factory=list)
+    packed: list[WindowPlanItem] = Field(default_factory=list)
+    deferred: list[WindowPlanItem] = Field(default_factory=list)
+    oversized: list[WindowPlanItem] = Field(default_factory=list)
+    unestimated: list[WindowPlanItem] = Field(default_factory=list)
+    booked_elsewhere: list[WindowPlanItem] = Field(default_factory=list)
+    minutes_used: int = 0
+    minutes_left: int = 0
+    # The fingerprint of the state the plan was computed over:
+    # the scope, every candidate's readiness-relevant state, and
+    # the confirmed bookings the plan read. Confirmation
+    # recomputes it; a mismatch refuses, naming what drifted
+    # (fingerprint_detail is the snapshot it is computed from —
+    # small per-candidate dicts, kept so the refusal can name
+    # names instead of reporting a bare hash change).
+    fingerprint: str = ""
+    fingerprint_detail: list[dict] = Field(default_factory=list)
+    planned_at: str = ""
+    confirmed_by: str = ""
+    confirmed_at: str = ""
+    created_at: str = ""
+
+
 class HistoryEntry(BaseModel):
     """One supervisor-confirmed fault, written back to the plant's memory.
 

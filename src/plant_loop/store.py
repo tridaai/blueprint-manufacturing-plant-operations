@@ -25,6 +25,7 @@ from .config import env_str, load_dotenv
 from .schemas import (
     BoardItem,
     CaseResult,
+    DowntimeWindow,
     HistoryEntry,
     MachineRecord,
     PartClaim,
@@ -104,6 +105,15 @@ class StoreBase:
         raise NotImplementedError
 
     def all_machine_records(self) -> list[MachineRecord]:
+        return []
+
+    def save_window_record(self, record: DowntimeWindow) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+    def get_window_record(self, window_id: str) -> DowntimeWindow | None:  # pragma: no cover
+        raise NotImplementedError
+
+    def all_window_records(self) -> list[DowntimeWindow]:
         return []
 
     def save_error(self, entry: dict) -> None:
@@ -191,6 +201,7 @@ class InMemoryStore(StoreBase):
         self._part_claims: dict[str, PartClaim] = {}
         self._pm_records: dict[str, PmRecord] = {}
         self._machine_records: dict[str, MachineRecord] = {}
+        self._window_records: dict[str, DowntimeWindow] = {}
         self._errors: list[dict] = []
 
     def save_case(self, record: CaseResult) -> None:
@@ -262,6 +273,18 @@ class InMemoryStore(StoreBase):
 
     def all_machine_records(self) -> list[MachineRecord]:
         return list(self._machine_records.values())
+
+    def save_window_record(self, record: DowntimeWindow) -> None:
+        # Upsert by window id: a window's re-plan and its
+        # confirmation are the same record changing state, not
+        # new windows.
+        self._window_records[record.window_id] = record
+
+    def get_window_record(self, window_id: str) -> DowntimeWindow | None:
+        return self._window_records.get(window_id)
+
+    def all_window_records(self) -> list[DowntimeWindow]:
+        return list(self._window_records.values())
 
     def save_error(self, entry: dict) -> None:
         self._errors.append(entry)
@@ -471,6 +494,35 @@ class PostgresStore(StoreBase):
             with conn.cursor() as cur:
                 cur.execute("SELECT payload FROM machine_records ORDER BY created_at, machine_id")
                 return [MachineRecord.model_validate(row[0]) for row in cur.fetchall()]
+
+    def save_window_record(self, record: DowntimeWindow) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO window_records (window_id, status, starts_at, payload) "
+                    "VALUES (%s, %s, %s, %s::jsonb) "
+                    "ON CONFLICT (window_id) DO UPDATE SET status = EXCLUDED.status, "
+                    "starts_at = EXCLUDED.starts_at, payload = EXCLUDED.payload",
+                    (record.window_id, record.status, record.starts_at,
+                     record.model_dump_json()),
+                )
+            conn.commit()
+
+    def get_window_record(self, window_id: str) -> DowntimeWindow | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT payload FROM window_records WHERE window_id = %s",
+                    (window_id,),
+                )
+                row = cur.fetchone()
+        return DowntimeWindow.model_validate(row[0]) if row else None
+
+    def all_window_records(self) -> list[DowntimeWindow]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT payload FROM window_records ORDER BY created_at, window_id")
+                return [DowntimeWindow.model_validate(row[0]) for row in cur.fetchall()]
 
     def save_error(self, entry: dict) -> None:
         with self._connect() as conn:

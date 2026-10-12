@@ -42,6 +42,7 @@ from .schemas import (
     BoardItem,
     Critique,
     Diagnosis,
+    DowntimeWindow,
     ExceptionCase,
     Gap,
     HistoryEntry,
@@ -174,6 +175,12 @@ class Store(Protocol):
     def get_machine_record(self, machine_id: str) -> "MachineRecord | None": ...
 
     def all_machine_records(self) -> list["MachineRecord"]: ...
+
+    def save_window_record(self, record: "DowntimeWindow") -> None: ...
+
+    def get_window_record(self, window_id: str) -> "DowntimeWindow | None": ...
+
+    def all_window_records(self) -> list["DowntimeWindow"]: ...
 
     def save_error(self, entry: dict) -> None: ...
 
