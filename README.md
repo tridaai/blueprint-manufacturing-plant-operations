@@ -8,7 +8,7 @@ An agent that works a manufacturing plant's shift **exception board** the way a 
 
 Every case ends at a **supervisor gate** with a draft work order or an escalation note. The agent never issues commands to machines, never marks work performed, and never closes a case. That sentence is printed on every record it produces.
 
-Reasoning is led by **Muse Spark** (Meta's Model API), with a Responses-API mode that carries reasoning continuity across loop rounds. The plant — "Meridian Fabrication, Plant 2", its SOPs, maintenance history, parts inventory and the nine-case board — is synthetic and bundled, so the whole thing runs end to end with no keys at all.
+Reasoning is led by **Muse Spark** (Meta's Model API), with a Responses-API mode that carries reasoning continuity across loop rounds. The plant — "Meridian Fabrication, Plant 2", its SOPs, maintenance history, parts inventory and the nine-case board — is bundled with the repo, so the whole thing runs end to end with no keys at all.
 
 > Reference prototype from Trida AI's blueprint series. The loops, guardrails and gate are the production-shaped parts; the plant data is a stand-in for the systems a real deployment would read.
 
