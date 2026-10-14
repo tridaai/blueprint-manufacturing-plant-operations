@@ -226,7 +226,7 @@ The board ranks the work, and the shift budget rations the *agent's* work — ca
 - **Docker/compose not run in the build sandbox** (no daemon); the topology mirrors the sibling blueprints' verified compose stacks, and the Dockerfile builds from the same frozen constraints. First `docker compose up --build` on a real machine is the check.
 - **PostgreSQL paths are covered by gated tests** that skip without `TEST_DATABASE_URL`; they ran against the doubles everywhere else.
 - The offline backend is a rules engine, not a model: its diagnoses are only as good as the SOP thresholds in the synthetic KB. It exists so the loops can be evaluated deterministically — swap in `muse` or `llm` for real reasoning.
-- The KB, histories, inventory and board are synthetic. A real deployment points the ports at the plant's CMMS/EAM, document store and historian; the loop code does not change.
+- The KB, histories, inventory and board ship as a stand-in set. A real deployment points the ports at the plant's CMMS/EAM, document store and historian; the loop code does not change.
 
 ## Layout
 
